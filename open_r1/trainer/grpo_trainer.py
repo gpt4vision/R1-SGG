@@ -379,14 +379,11 @@ class GRPOTrainerV2(Trainer):
 
         # Processing class
         if processing_class is None:
-            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id or "Aria" in model_id:
-                processing_class = AutoProcessor.from_pretrained(model_id)
+            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id:
+                processing_class = AutoProcessor.from_pretrained(model_id, min_pixels=min_pixels, max_pixels=max_pixels)
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id
                 processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
-                if "Qwen" in model_id or "Qwen2.5-VL" in model_id:
-                    processing_class.image_processor.max_pixels = max_pixels
-                    processing_class.image_processor.min_pixels = min_pixels
             else:
                 processing_class = AutoTokenizer.from_pretrained(model.config._name_or_path, padding_side="left")
                 pad_token_id = processing_class.pad_token_id            
@@ -794,7 +791,7 @@ class GRPOTrainerV2(Trainer):
             prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
             pixel_values, image_grid_thw = None, None
 
-        # truncate 
+        # truncate TODO: dangerous for qwen2vl
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
@@ -851,8 +848,7 @@ class GRPOTrainerV2(Trainer):
             ) as unwrapped_model:
                 if self.is_qwen2vl:
                     prompt_completion_ids = unwrapped_model.generate(
-                        prompt_ids, attention_mask=prompt_mask, pixel_values=pixel_values,
-                        image_grid_thw=image_grid_thw,
+                        **prompt_inputs, 
                         generation_config=self.generation_config)
                 else:
                     prompt_completion_ids = unwrapped_model.generate(

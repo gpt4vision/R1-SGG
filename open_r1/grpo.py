@@ -80,7 +80,8 @@ def extract_answer_content(text: str) -> str:
     Returns:
         str: The extracted content.
     """
-    text = text.replace("```", " ").strip()
+    text = text.replace("```", " ").replace("json", " ").strip()
+
     # Try to find full <answer>...</answer>
     match = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL)
     if match:
@@ -262,6 +263,7 @@ def format_reward(completions, **kwargs):
     """
     pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
     rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
     for completion in completions:
         content = completion[0]["content"]
         match = re.fullmatch(pattern, content, re.DOTALL)
@@ -362,7 +364,8 @@ def main(script_args, training_args, model_args):
     if not hasattr(training_args, "repetition_penalty"):
         training_args.repetition_penalty = getattr(script_args, "repetition_penalty", 1.0)
 
-    print("config:", training_args)
+    print("training config:", training_args)
+    print("script config:", script_args)
 
     trainer = GRPOTrainerV2(
         model=model_args.model_name_or_path,
