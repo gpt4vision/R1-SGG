@@ -64,7 +64,11 @@ from transformers.utils import is_peft_available
 from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
 from trl.extras.profiling import profiling_context, profiling_decorator
 #from ..extras.vllm_client import VLLMClient
-from .utils.vllm_client import VLLMClient
+try:
+    from .utils.vllm_client import VLLMClient
+except:
+    print("Failed to import VLLMClient !")
+    pass
 
 from trl.import_utils import is_deepspeed_available, is_rich_available, is_vllm_available
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
@@ -532,12 +536,10 @@ class GRPOTrainerV2(Trainer):
             # synchronize all processes after vLLM has been fully initialized.
             self.accelerator.wait_for_everyone()
         else:
+
             self.generation_config = GenerationConfig(
                 max_new_tokens=self.max_completion_length,
                 do_sample=True,
-                pad_token_id=processing_class.pad_token_id,
-                bos_token_id=processing_class.bos_token_id,
-                eos_token_id=processing_class.eos_token_id,
                 temperature=self.temperature,
                 top_p=self.top_p,
                 top_k=self.top_k,
@@ -763,7 +765,6 @@ class GRPOTrainerV2(Trainer):
             prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
             pixel_values = prompt_inputs["pixel_values"]
             image_grid_thw = prompt_inputs["image_grid_thw"]            
-            import pdb; pdb.set_trace()
 
             if self.use_vllm: # prepare data for vLLM servers
                 llm_inputs = []
