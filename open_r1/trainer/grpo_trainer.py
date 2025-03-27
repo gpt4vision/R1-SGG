@@ -748,10 +748,7 @@ class GRPOTrainerV2(Trainer):
                     ]
                 example={"prompt": messages, "image": image}
             """
-            inputs, prompt_inputs = inputs
             prompts = [x["prompt"] for x in inputs]
-            
-            """
             prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
             images = [x["image"] for x in inputs]
             prompt_inputs = self.processing_class(
@@ -759,7 +756,6 @@ class GRPOTrainerV2(Trainer):
                 return_tensors="pt", padding=True,
                 padding_side="left", add_special_tokens=False,
             )
-            """
             prompt_inputs = super()._prepare_inputs(prompt_inputs)
 
             prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]

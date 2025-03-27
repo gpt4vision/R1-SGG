@@ -344,16 +344,17 @@ def main(script_args, training_args, model_args):
                 scene_graph = {"objects": gt_objs, "relationships": gt_rels}
                 batch.append({"prompt": prompt, "image": example["image"], "solution": scene_graph})
 
-            prompts_text = [maybe_apply_chat_template(example, self.processor)["prompt"] for example in batch]
-            images = [x["image"] for x in batch]
+            #prompts_text = [maybe_apply_chat_template(example, self.processor)["prompt"] for example in batch]
+            #images = [x["image"] for x in batch]
 
-            prompt_inputs = self.processor(
-                text=prompts_text, images=images,
-                return_tensors="pt", padding=True,
-                padding_side="left", add_special_tokens=False,
-            )
+            #prompt_inputs = self.processor(
+            #    text=prompts_text, images=images,
+            #    return_tensors="pt", padding=True,
+            #    padding_side="left", add_special_tokens=False,
+            #)
 
-            return batch, prompt_inputs            
+            #return batch, prompt_inputs            
+            return batch
 
     try:
         rank = torch.distributed.get_rank()
