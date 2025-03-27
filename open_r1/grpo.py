@@ -22,7 +22,7 @@ from typing import Optional
 import torch
 import numpy as np
 from datasets import load_dataset, load_from_disk
-from transformers import Qwen2VLForConditionalGeneration
+from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
 
 from trainer import GRPOTrainerV2, GRPOConfig
 
@@ -31,6 +31,8 @@ from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from scipy.optimize import linear_sum_assignment
 import spacy
 from functools import lru_cache
+
+from trl.data_utils import maybe_apply_chat_template
 
 # Set DEBUG_MODE flag and log path once
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -315,7 +317,10 @@ def main(script_args, training_args, model_args):
     def replace_answer_format(item: str) -> str:
         return item.replace("<answer>", "```").replace("</answer>", "```")
 
-    class Collator:
+    class Collator(object):
+        def __init__(self, processor):
+            self.processor = processor
+
         def __call__(self, examples):
             batch = []
             for example in examples:
@@ -338,16 +343,38 @@ def main(script_args, training_args, model_args):
 
                 scene_graph = {"objects": gt_objs, "relationships": gt_rels}
                 batch.append({"prompt": prompt, "image": example["image"], "solution": scene_graph})
-            return batch
 
-    rank = torch.distributed.get_rank()
-    world_size = torch.distributed.get_world_size()
-    collator_instance = Collator()
+            prompts_text = [maybe_apply_chat_template(example, self.processor)["prompt"] for example in batch]
+            images = [x["image"] for x in batch]
+
+            prompt_inputs = self.processor(
+                text=prompts_text, images=images,
+                return_tensors="pt", padding=True,
+                padding_side="left", add_special_tokens=False,
+            )
+
+            return batch, prompt_inputs            
+
+    try:
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
+    except:
+        rank = 0
+        world_size = 1
+
+    processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
+                    min_pixels=script_args.min_pixels,
+                    max_pixels=script_args.max_pixels)
+    collator_instance = Collator(processor)
+
     print("*" * 100)
     print(f"rank={rank}, world size={world_size}, len(dataset)={len(dataset)}, dataset[0]:", collator_instance([dataset[0]]))
-    print("*" * 100)
     print("use_vllm:", training_args.use_vllm)
+    print("data collator:", collator_instance)
+    print("*" * 100)
 
+
+    
     if not hasattr(training_args, "model_init_kwargs") or training_args.model_init_kwargs is None:
         training_args.model_init_kwargs = {
             'torch_dtype': torch.bfloat16,
@@ -359,7 +386,7 @@ def main(script_args, training_args, model_args):
     if not hasattr(training_args, "top_p"):
         training_args.top_p = getattr(script_args, "top_p", 1.0)
     if not hasattr(training_args, "top_k"):
-        training_args.top_k = getattr(script_args, "top_k", 50)
+        training_args.top_k = getattr(script_args, "top_k", 10)
     if not hasattr(training_args, "repetition_penalty"):
         training_args.repetition_penalty = getattr(script_args, "repetition_penalty", 1.0)
 
