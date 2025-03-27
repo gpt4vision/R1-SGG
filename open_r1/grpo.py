@@ -24,7 +24,6 @@ import numpy as np
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
-from math_verify import parse, verify
 from trainer import GRPOTrainerV2, GRPOConfig
 
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
