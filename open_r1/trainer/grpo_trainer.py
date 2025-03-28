@@ -359,9 +359,6 @@ class GRPOTrainerV2(Trainer):
         if self.beta == 0.0:
             # If beta is 0.0, the reference model is not needed
             self.ref_model = None
-        elif args.move_ref_model_to_vllm:
-            assert args.use_vllm and (args.sync_ref_model == False), "use_vllm must be True and sync_ref_model must be False if move_ref_model_to_vllm"
-            self.ref_model = None
         elif is_deepspeed_zero3_enabled():
             if "Qwen2-VL" in model_id:
                 self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
@@ -441,7 +438,6 @@ class GRPOTrainerV2(Trainer):
         self.min_p = args.min_p
         self.repetition_penalty = args.repetition_penalty
         self.use_vllm = args.use_vllm
-        self.move_ref_model_to_vllm = args.move_ref_model_to_vllm
 
         # Multi-step
         self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
@@ -519,14 +515,6 @@ class GRPOTrainerV2(Trainer):
 
             self._last_loaded_step = 0  # tag to avoid useless loading during grad accumulation
 
-            # set for the reference model
-            if self.move_ref_model_to_vllm:
-                if self.accelerator.is_main_process:
-                    self.ref_vllm_client = VLLMClient(
-                            args.vllm_ref_server_host, args.vllm_ref_server_port, 
-                            connection_timeout=args.vllm_server_timeout,
-                            disable_weight_update=True
-                            )
 
             # When using vLLM, the main process is responsible for loading the model weights. This can cause process
             # desynchronization and seems to lead to DeepSpeed hanging during initialization. To prevent this, we
@@ -814,7 +802,7 @@ class GRPOTrainerV2(Trainer):
                 # prompt individually.
                 ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
                 with profiling_context(self, "vLLM.generate"):
-                    completion_ids = self.vllm_client.chat(
+                    completion_ids = self.vllm_client.loop.run_until_complete(self.vllm_client.chat(
                         prompts=ordered_set_of_prompts,
                         n=self.num_generations,
                         repetition_penalty=self.repetition_penalty,
@@ -824,7 +812,7 @@ class GRPOTrainerV2(Trainer):
                         min_p=0.0 if self.min_p is None else self.min_p,
                         max_tokens=self.max_completion_length,
                         guided_decoding_regex=self.guided_decoding_regex,
-                    )
+                    ))
             else:
                 completion_ids = [None] * len(all_prompts_text)
             # Broadcast the completions from the main process to all processes, ensuring each process receives its
@@ -884,12 +872,6 @@ class GRPOTrainerV2(Trainer):
 
             if self.beta == 0.0:
                 ref_per_token_logps = None
-
-            elif self.move_ref_model_to_vllm:
-                ref_per_token_logps = self.ref_vllm_client.compute_log_probs(
-                                        prompt_completion_ids.tolist(), attention_mask.tolist(), logits_to_keep,
-                                        pixel_values.tolist(), image_grid_thw.tolist())
-
             elif self.ref_model is not None:
                 ref_per_token_logps = self._get_per_token_logps(
                     self.ref_model, prompt_completion_ids, attention_mask, logits_to_keep,

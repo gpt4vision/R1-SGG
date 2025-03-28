@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+##########################################################
+#
+# for processing 128 prompts, vLLM.generate
+# exp1: 128x rtx_4090 training + 1x4 4090 for vLLM: time cost ~70s
+# exp2: 128x rtx_4090 training + 8x4 4090 for vLLM: time cost ~
+##########################################################
+
 import argparse
 import logging
 import os

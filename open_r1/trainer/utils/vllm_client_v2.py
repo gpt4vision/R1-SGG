@@ -15,6 +15,7 @@
 import atexit
 import logging
 import time
+import copy
 from typing import Optional, List
 
 import torch
@@ -23,6 +24,8 @@ from torch import nn
 from trl.import_utils import is_vllm_available
 from .misc import is_requests_available
 
+import aiohttp
+import asyncio
 
 if is_requests_available():
     import requests
@@ -88,22 +91,43 @@ class VLLMClient:
             raise ImportError("vLLM is not installed. Please install it with `pip install vllm`.")
 
         if isinstance(hosts, str):
-            hosts = hosts.split(',') # hack
+            hosts = [h.strip() for h in hosts.split(',')]            
 
-        self.sessions = [requests.Session() for _ in range(len(hosts))]
-        self.hosts = hosts
         self.server_port = server_port
         self.group_port = group_port
+
+        # Create a new persistent event loop running in the background
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+        # Initialize sessions and communicator
+        self.sessions = self.loop.run_until_complete(self._create_sessions(hosts))
+
         valid_hosts = []
         for host in hosts:
-            status = self.check_server(host, connection_timeout)  # check server and fail after timeout
+            status = self.check_server(host, connection_timeout)
             if status:
                 valid_hosts.append(host)
         self.hosts = valid_hosts
-        self.init_communicator()
-        atexit.register(self.close_communicator)  # when the client object is deleted, close the weight update group
+        self.loop.run_until_complete(self.init_communicator())
+        atexit.register(self.cleanup)
 
-        print(f"VLLMClient connected to server host={host}, port={server_port}")
+        print(f"VLLMClient connected to server hosts={self.hosts}, port={server_port}")        
+
+    def cleanup(self):
+        if not self.loop.is_closed():
+            self.loop.run_until_complete(self.close_communicator())
+            self.loop.run_until_complete(self.close_sessions())
+            self.loop.close()        
+
+    async def _create_sessions(self, hosts: List[str]) -> List[aiohttp.ClientSession]:
+        """
+        Asynchronously creates aiohttp client sessions for the provided hosts.
+        """
+        sessions = []
+        for _ in hosts:
+            sessions.append(aiohttp.ClientSession())
+        return sessions        
 
     def check_server(self, host, total_timeout: float = 0.0, retry_interval: float = 2.0):
         """
@@ -142,7 +166,7 @@ class VLLMClient:
 
         return False
 
-    def chat(
+    async def chat(
         self,
         prompts: list[str],
         n: int = 1,
@@ -181,95 +205,112 @@ class VLLMClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
+        payload = {
+            "prompts": [],
+            "n": n,
+            "repetition_penalty": repetition_penalty,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "max_tokens": max_tokens,
+            "guided_decoding_regex": guided_decoding_regex,
+        }
+
+        tasks = []
         total_hosts = len(self.hosts)
         chunk_size = max(1, len(prompts) // total_hosts)
-        
-        results = []
+
         for i, host in enumerate(self.hosts):
-            if i == total_hosts - 1:
-                batch = prompts[i*chunk_size:]
-            else:
-                batch = prompts[i*chunk_size : (i+1)*chunk_size]
-                
-            if len(batch) == 0:
+            session = self.sessions[i]
+            start_idx = i * chunk_size
+            end_idx = None if i == total_hosts - 1 else (i + 1) * chunk_size
+            batch = prompts[start_idx:end_idx]
+            if not batch:
                 continue
+
             url = f"http://{host}:{self.server_port}/chat/"
-            response = self.sessions[i].post(
-                url,
-                json={
-                    "prompts": batch,
-                    "n": n,
-                    "repetition_penalty": repetition_penalty,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k,
-                    "min_p": min_p,
-                    "max_tokens": max_tokens,
-                    "guided_decoding_regex": guided_decoding_regex,
-                },
-            )
-            if response.status_code == 200:
-                output = response.json()["completion_ids"]
-                results.extend(output)
-            else:
-                raise Exception(f"Request failed on host {host}: {response.status_code}, {response.text}")
-        
-        return results        
+            batch_payload = copy.deepcopy(payload)
+            batch_payload["prompts"] = batch
+            tasks.append(self._async_post(session, url, batch_payload))
+
+        responses = await asyncio.gather(*tasks)
+        results = []
+        for res in responses:
+            results.extend(res["completion_ids"])
+
+        return results
+
+    async def _async_post(self, session, url, payload):
+        async with session.post(url, json=payload) as response:
+            if response.status != 200:
+                raise Exception(f"Request failed: {response.status}, {await response.text()}")
+            return await response.json()    
 
 
-    def init_communicator(self):
+    async def init_communicator(self):
         """
         Initializes the weight update group in a distributed setup for model synchronization.
         """
-        for kk, host in enumerate(self.hosts):
-            # Get the tensor parallel size from the server
-            url = f"http://{host}:{self.server_port}/get_tensor_parallel_size/"
-            response = requests.get(url)
-            if response.status_code == 200:
-                tensor_parallel_size = response.json()["tensor_parallel_size"]
-            else:
-                raise Exception(f"Request failed: {response.status_code}, {response.text}")
+        tasks = []
 
-            url = f"http://{host}:{self.server_port}/get_dp_world_size/"
-            response = requests.get(url)
-            if response.status_code == 200:
-                dp_world_size = response.json()["dp_world_size"]
-            else:
-                raise Exception(f"Request failed: {response.status_code}, {response.text}")
+        async def init_single_communicator(session, host):
+            url_tp = f"http://{host}:{self.server_port}/get_tensor_parallel_size/"
+            url_dp = f"http://{host}:{self.server_port}/get_dp_world_size/"
+
+            async with session.get(url_tp) as resp_tp:
+                if resp_tp.status != 200:
+                    raise Exception(f"Request failed: {resp_tp.status}, {await resp_tp.text()}")
+                tensor_parallel_size = (await resp_tp.json())["tensor_parallel_size"]
+
+            async with session.get(url_dp) as resp_dp:
+                if resp_dp.status != 200:
+                    raise Exception(f"Request failed: {resp_dp.status}, {await resp_dp.text()}")
+                dp_world_size = (await resp_dp.json())["dp_world_size"]
 
             world_size = tensor_parallel_size * dp_world_size + 1
-            self.rank = world_size - 1  # The client's rank is the last process
+            payload = {"host": self.hosts[0], "port": self.group_port, "world_size": world_size}
+            await self._async_post(session, f"http://{host}:{self.server_port}/init_communicator/", payload)
+            return world_size
 
-            # Initialize weight update group
-            url = f"http://{host}:{self.server_port}/init_communicator/"
-            response = self.sessions[kk].post(url, json={"host": self.hosts[0], "port": self.group_port, "world_size": world_size})
-            if response.status_code != 200:
-                raise Exception(f"Request failed: {response.status_code}, {response.text}")
+        for session, host in zip(self.sessions, self.hosts):
+            tasks.append(init_single_communicator(session, host))
+
+        results = await asyncio.gather(*tasks)
+
+        # Use the world_size from the first result to set rank
+        world_size = results[0]
+        self.rank = world_size - 1            
 
         # Set up the communication group for weight broadcasting
         pg = StatelessProcessGroup.create(host=self.hosts[0], port=self.group_port, rank=self.rank, world_size=world_size)
         self.pynccl_comm = PyNcclCommunicator(pg, device="cuda:0")
 
+
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
         Updates a specific named parameter in the model and broadcasts it to other processes.
-
+    
         Args:
-            name (`str`):
-                Name of the layer whose weights are being updated.
-            weights (`torch.Tensor`):
-                Tensor containing the updated weights.
+            name (`str`): Name of the layer whose weights are being updated.
+            weights (`torch.Tensor`): Tensor containing the updated weights.
         """
         dtype, shape = str(weights.dtype), tuple(weights.shape)
-        for kk, host in enumerate(self.hosts):
+        payload = {"name": name, "dtype": dtype, "shape": shape}
+    
+        for host in self.hosts:
             url = f"http://{host}:{self.server_port}/update_named_param/"
-            response = self.sessions[kk].post(url, json={"name": name, "dtype": dtype, "shape": shape})
-            if response.status_code != 200:
-                raise Exception(f"Request failed: {response.status_code}, {response.text}")
-
+            try:
+                response = requests.post(url, json=payload, timeout=60)
+                if response.status_code != 200:
+                    raise RuntimeError(f"[{host}] Failed to update param '{name}': {response.status_code} {response.text}")
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] Failed to send update_named_param to {host}: {e}")
+                raise        
+    
         # Broadcast the weights to the other processes
         self.pynccl_comm.broadcast(weights, src=self.rank, stream=torch.cuda.current_stream())
-        self.pynccl_comm.group.barrier()
+        self.pynccl_comm.group.barrier()        
 
     def update_model_params(self, model: nn.Module):
         """
@@ -280,43 +321,39 @@ class VLLMClient:
                 Model whose parameters (weights/biases) are to be updated.
         """
         for name, param in model.named_parameters():
-            # Update each parameter individually
-            #print("name:", name, " norm:", param.data.norm())
-            self.update_named_param(name, param.data)
+            self.update_named_param(name, param.data)        
+
 
     def reset_prefix_cache(self):
         """
-        Resets the prefix cache for the model.
+        Synchronously resets the prefix cache on all vLLM servers.
         """
-        for kk, host in enumerate(self.hosts):
+        for host in self.hosts:
             url = f"http://{host}:{self.server_port}/reset_prefix_cache/"
-            response = self.sessions[kk].post(url)
-            if response.status_code != 200:
-                raise Exception(f"Request failed: {response.status_code}, {response.text}")
+            try:
+                response = requests.post(url, json={}, timeout=60)
+                if response.status_code != 200:
+                    raise RuntimeError(f"[{host}] Failed to reset prefix cache: {response.status_code} {response.text}")
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] Could not reset prefix cache on {host}: {e}")
+                raise Exception(e)
 
-    def close_communicator(self):
+    async def close_communicator(self):
         """
         Closes the weight update group and cleans up the communication group.
         """
+        tasks = []
         for kk, host in enumerate(self.hosts):
             url = f"http://{host}:{self.server_port}/close_communicator/"
-            response = self.sessions[kk].post(url)
-            if response.status_code != 200:
-                raise Exception(f"Request failed: {response.status_code}, {response.text}")
+            tasks.append(self._async_post(self.sessions[kk], url, {}))
+    
+        await asyncio.gather(*tasks)        
 
 
-# Example usage
-if __name__ == "__main__":
-    from vllm import SamplingParams
+    async def close_sessions(self):
+        """
+        Closes all aiohttp client sessions.
+        """
+        for session in self.sessions:
+            await session.close()        
 
-    client = VLLMClient()
-
-    # Generate completions
-    responses = client.generate(["Hello, AI!", "Tell me a joke"], n=4, max_tokens=32, sampling_params=SamplingParams())
-    print("Responses:", responses)  # noqa
-
-    # Update model weights
-    from transformers import AutoModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B").to("cuda")
-    client.update_model_params(model)

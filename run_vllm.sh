@@ -3,8 +3,8 @@
 #SBATCH --job-name=VLLM
 #SBATCH --time=24:00:00
 
-#SBATCH --nodes=8
-#SBATCH --ntasks=8
+#SBATCH --nodes=16
+#SBATCH --ntasks=16
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=rtx_4090:4
 #SBATCH --cpus-per-task=4
