@@ -26,6 +26,7 @@ from .misc import is_requests_available
 
 import aiohttp
 import asyncio
+from collections import defaultdict
 
 if is_requests_available():
     import requests
@@ -323,6 +324,41 @@ class VLLMClient:
         for name, param in model.named_parameters():
             self.update_named_param(name, param.data)        
 
+    def update_model_in_chunks(self, model: nn.Module, chunk_size: int = 50):
+        named_params = list(model.named_parameters())
+    
+        for i in range(0, len(named_params), chunk_size):
+            chunk = named_params[i:i+chunk_size]
+    
+            # Group params by dtype
+            dtype_groups = defaultdict(list)
+            for name, param in chunk:
+                dtype_groups[str(param.dtype)].append((name, param))
+    
+            # Send each dtype group separately
+            for dtype_str, group in dtype_groups.items():
+                meta, tensors = [], []
+                for name, param in group:
+                    meta.append({
+                        "name": name,
+                        "dtype": dtype_str,
+                        "shape": list(param.shape)
+                    })
+                    tensors.append(param.data.contiguous().flatten())
+    
+                buffer_tensor = torch.cat(tensors).to("cuda")
+    
+                # Broadcast via NCCL
+                self.pynccl_comm.broadcast(buffer_tensor, src=self.rank, stream=torch.cuda.current_stream())
+                self.pynccl_comm.group.barrier()
+    
+                # Send metadata via HTTP
+                for host in self.hosts:
+                    url = f"http://{host}:{self.server_port}/load_chunked_params/"
+                    response = requests.post(url, json={"params": meta}, timeout=60)
+                    assert response.status_code == 200, f"[ERROR] Failed on {host}: {response.text}"
+    
+                #print(f"[Chunk] Synced {len(group)} params of dtype {dtype_str}")            
 
     def reset_prefix_cache(self):
         """

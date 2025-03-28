@@ -23,8 +23,9 @@ import argparse
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, List
+from typing import Optional, Sequence, List, Dict
 
+import io
 import torch
 import json
 
@@ -62,6 +63,15 @@ logger = logging.getLogger(__name__)
 
 # Use spawn method for CUDA multiprocessing
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+
+class ChunkedParam(BaseModel):
+    name: str
+    dtype: str
+    shape: List[int]
+
+class ChunkedWeightsRequest(BaseModel):
+    params: List[ChunkedParam]
 
 
 
@@ -113,6 +123,31 @@ class WeightSyncWorker(Worker):
         current_rank = rank + node_rank * tp_size
         #print(f"RANK: {rank}, Node rank:{node_rank}, global rank:{current_rank}  -- update_named_param:{name}, weight.data.norm():", weight.data.norm())
         self.model_runner.model.load_weights(weights=[(name, weight)])
+
+    def load_chunked_params(self, param_meta: List[dict]):
+        if self.pynccl_comm is None:
+            raise RuntimeError("Communicator not initialized. Call `init_communicator` first.")
+
+        # Group parameters by dtype
+        dtype_groups: Dict[str, List[dict]] = {}
+        for param in param_meta:
+            dtype_groups.setdefault(param["dtype"], []).append(param)
+
+        for dtype_str, group in dtype_groups.items():
+            dtype = getattr(torch, dtype_str.split(".")[-1])
+            total_elems = sum(torch.Size(p["shape"]).numel() for p in group)
+            flat_tensor = torch.empty(total_elems, dtype=dtype, device=self.device)
+
+            self.pynccl_comm.broadcast(flat_tensor, src=self.client_rank, stream=torch.cuda.current_stream())
+            self.pynccl_comm.group.barrier()
+
+            offset = 0
+            for meta in group:
+                numel = torch.Size(meta["shape"]).numel()
+                chunk = flat_tensor[offset:offset + numel].view(meta["shape"])
+                offset += numel
+                self.model.load_weights([(meta["name"], chunk)])
+
 
     def close_communicator(self) -> None:
         if self.pynccl_comm is not None:
@@ -293,6 +328,17 @@ def main(script_args: ScriptArguments):
         dtype = getattr(torch, request.dtype.split(".")[-1])
         background_tasks.add_task(llm.collective_rpc, "update_named_param", args=(request.name, dtype, request.shape))
         return {"message": "Request received, updating named parameter"}
+
+    @app.post("/load_chunked_params/")
+    async def load_chunked_params(request: ChunkedWeightsRequest, background_tasks: BackgroundTasks):
+        # Send metadata (not weights!) to all workers
+        params = [param.dict() for param in request.params]
+        background_tasks.add_task(
+            llm.collective_rpc,
+            "load_chunked_params",
+            args=(params,)
+        )
+        return {"message": f"Request received to load {len(params)} parameters"}    
 
     @app.post("/reset_prefix_cache/")
     async def reset_prefix_cache():
