@@ -99,8 +99,8 @@ def get_doc(word: str):
 
 def category_semantic_similarity(pred_id: str, gt_id: str) -> float:
     # Extract category names from ids (substring before the dot)
-    cat_pred = pred_id.split('.')[0]
-    cat_gt = gt_id.split('.')[0]
+    cat_pred = pred_id.split('.')[0].lower()
+    cat_gt = gt_id.split('.')[0].lower()
     return get_doc(cat_pred).similarity(get_doc(cat_gt))
 
 
@@ -406,6 +406,7 @@ def main(script_args, training_args, model_args):
         data_collator=collator_instance
     )
 
+    #trainer.train(resume_from_checkpoint=True)
     trainer.train()
     trainer.save_model(training_args.output_dir)
     if training_args.push_to_hub:

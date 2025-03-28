@@ -65,7 +65,7 @@ from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_c
 from trl.extras.profiling import profiling_context, profiling_decorator
 #from ..extras.vllm_client import VLLMClient
 try:
-    from .utils.vllm_client import VLLMClient
+    from .utils.vllm_client_v2 import VLLMClient
 except:
     print("Failed to import VLLMClient !")
     pass

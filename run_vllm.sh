@@ -2,43 +2,65 @@
 
 #SBATCH --job-name=VLLM
 #SBATCH --time=24:00:00
-#SBATCH --nodes=1                    # 4 training nodes + 1 vLLM node = 5 nodes
-#SBATCH --ntasks=1                   # Total tasks equals total nodes
+
+#SBATCH --nodes=8
+#SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=rtx_4090:4
+#SBATCH --gpus-per-node=rtx_4090:4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=25000M
-#SBATCH --output=VLLM_%j_%N.out
+#SBATCH --output=DP-VLLM_%j_%N.out
 
-# Define node counts
-NUM_VLLM_NODE=1
-GPUS_PER_NODE=4
+# ------------------ Config ------------------
+MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
+TP_SIZE=4                 # Tensor parallelism per node (same as GPUs per node)
+PORT_BASE=8888
 
-# Get the list of allocated nodes
-NODELIST=($(scontrol show hostnames $SLURM_JOB_NODELIST))
+# ------------------ Environment ------------------
+nodes=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
+DP_WORLD_SIZE=${#nodes[@]}      # Data Parallel world size
 
-# Assign vLLM server node (the last node in the allocation)
-VLLM_NODE_A=${NODELIST[0]}
+head_node=${nodes[0]}
+head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
+MASTER_PORT=$(shuf -i 20000-40000 -n 1)
+MASTER_IP=${head_node_ip}
+
+echo "Head node IP: ${MASTER_IP}, Port: ${MASTER_PORT}"
+echo "DP_WORLD_SIZE : ${DP_WORLD_SIZE}"
+echo "Node list: ${nodes[@]}"
+
+echo "All node IPs:"
+> ip_list.txt  # Truncate the file to start fresh
+
+for node in "${nodes[@]}"; do
+    ip=$(srun --nodes=1 --ntasks=1 -w "$node" hostname --ip-address)
+    echo "$ip" >> ip_list.txt
+done
 
 
+# ------------------ Launch per-node ------------------
+for (( i=0; i<${DP_WORLD_SIZE}; i++ ))
+do
+    node=${nodes[$i]}
+    echo "Launching on node $node with rank $i"
 
-# Define HOST and PORT for the vLLM server
-HOST_A=$VLLM_NODE_A
-PORT_A=8888
+    srun --nodes=1 --nodelist=${node} \
+    bash -c "
+        export RANK=$i
+        export DP_WORLD_SIZE=$DP_WORLD_SIZE
+        export TP_SIZE=$TP_SIZE
+        export MASTER_ADDR=$MASTER_IP
+        export MASTER_PORT=$MASTER_PORT
 
-HOST_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HOST_A" hostname --ip-address)
+        python vllm_server_v2.py \
+            --model '${MODEL_PATH}' \
+            --gpu_memory_utilization 0.9 \
+            --dtype 'bfloat16' \
+            --max_model_len 4096 \
+            --tensor_parallel_size ${TP_SIZE} \
+            --host '0.0.0.0' \
+            --port ${PORT_BASE}
+    " &
+done
 
-echo "HOST_A:$HOST_A, PORT_A:$PORT_A, IP:$HOST_NODE_IP"
-
-# Start vLLM server on the vLLM node using 4 GPUs (adjust as needed)
-srun --nodes=1 --nodelist="${VLLM_NODE_A}" \
-    python vllm_server.py \
-    --model Qwen/Qwen2-VL-7B-Instruct \
-    --gpu_memory_utilization 0.9 \
-    --dtype "bfloat16" \
-    --max_model_len 8192 \
-    --tensor_parallel_size 4 \
-    --pipeline_parallel_size 1 \
-    --host 0.0.0.0 \
-    --port $PORT_A 
-
+wait

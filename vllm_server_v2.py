@@ -85,7 +85,7 @@ class WeightSyncWorker(Worker):
         node_rank = int(os.environ['RANK'])
         tp_size = int(os.environ['TP_SIZE'])
         current_rank = rank + node_rank * tp_size
-        print(f"RANK: {rank}, Node rank:{node_rank}, global rank:{current_rank}, world_size:{world_size} -- init_communicator")
+        #print(f"RANK: {rank}, Node rank:{node_rank}, global rank:{current_rank}, world_size:{world_size} -- init_communicator")
 
         pg = StatelessProcessGroup.create(host=host, port=port, 
                         rank=current_rank, world_size=world_size)
@@ -104,7 +104,7 @@ class WeightSyncWorker(Worker):
         node_rank = int(os.environ['RANK'])
         tp_size = int(os.environ['TP_SIZE'])
         current_rank = rank + node_rank * tp_size
-        print(f"RANK: {rank}, Node rank:{node_rank}, global rank:{current_rank}  -- update_named_param, weight.data.norm():", weight.data.norm())
+        #print(f"RANK: {rank}, Node rank:{node_rank}, global rank:{current_rank}  -- update_named_param:{name}, weight.data.norm():", weight.data.norm())
         self.model_runner.model.load_weights(weights=[(name, weight)])
 
     def close_communicator(self) -> None:

@@ -87,6 +87,9 @@ class VLLMClient:
         if not is_vllm_available():
             raise ImportError("vLLM is not installed. Please install it with `pip install vllm`.")
 
+        if isinstance(hosts, str):
+            hosts = hosts.split(',') # hack
+
         self.sessions = [requests.Session() for _ in range(len(hosts))]
         self.hosts = hosts
         self.server_port = server_port
@@ -278,7 +281,7 @@ class VLLMClient:
         """
         for name, param in model.named_parameters():
             # Update each parameter individually
-            print("name:", name, " norm:", param.data.norm())
+            #print("name:", name, " norm:", param.data.norm())
             self.update_named_param(name, param.data)
 
     def reset_prefix_cache(self):
