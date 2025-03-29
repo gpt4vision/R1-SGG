@@ -694,18 +694,17 @@ class GRPOTrainerV2(Trainer):
                     if self.accelerator.is_main_process:
                         self.vllm_client.update_named_param(name, param.data)
             """
-            if self.accelerator.is_main_process:
-                # Manually chunk the model parameters
-                named_params = list(self.model.named_parameters())
-                chunk_size = 15  # or tune based on memory
+            # Manually chunk the model parameters
+            named_params = list(self.model.named_parameters())
+            chunk_size = 10  # or tune based on memory
             
-                for i in range(0, len(named_params), chunk_size):
-                    chunk = named_params[i:i+chunk_size]
-                    param_chunk = [p for _, p in chunk]
+            for i in range(0, len(named_params), chunk_size):
+                chunk = named_params[i:i+chunk_size]
+                param_chunk = [p for _, p in chunk]
             
-                    with gather_if_zero3(param_chunk):
-                        if self.accelerator.is_main_process:
-                            self.vllm_client.update_model_in_chunks_from_named_list(chunk)
+                with gather_if_zero3(param_chunk):
+                    if self.accelerator.is_main_process:
+                        self.vllm_client.update_model_in_chunks_from_named_list(chunk)
                         
 
         # Reset cache on main process
