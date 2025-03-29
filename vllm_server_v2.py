@@ -258,10 +258,6 @@ def main(script_args: ScriptArguments):
     async def get_tensor_parallel_size():
         return {"tensor_parallel_size": llm.llm_engine.parallel_config.tensor_parallel_size}
 
-    @app.get("/get_dp_world_size/")
-    async def get_dp_world_size():
-        wsize = int(os.environ['DP_WORLD_SIZE'])
-        return {"dp_world_size": wsize}
 
     class GenerateRequest(BaseModel):
         prompts: List[str]
@@ -307,11 +303,10 @@ def main(script_args: ScriptArguments):
         host: str
         port: int
         world_size: int
+        client_rank: int
 
     @app.post("/init_communicator/")
     async def init_communicator(request: InitCommunicatorRequest, background_tasks: BackgroundTasks):
-        #wsize = int(os.environ['DP_WORLD_SIZE'])
-        #total_workers = script_args.tensor_parallel_size * wsize + 1
         total_workers = request.world_size
 
         background_tasks.add_task(
@@ -319,7 +314,7 @@ def main(script_args: ScriptArguments):
             "init_communicator",
             args=(request.host, request.port, total_workers),
         )
-        return {"message": "Request received, initializing communicator"}
+        return {"message": "Request received, initializing communicator from client rank:%s"%request.client_rank }
 
     class UpdateWeightsRequest(BaseModel):
         name: str

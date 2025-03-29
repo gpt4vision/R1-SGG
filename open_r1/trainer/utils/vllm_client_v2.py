@@ -83,10 +83,12 @@ class VLLMClient:
         ```
     """
 
-    def __init__(
-        self, hosts: List[str] = ["0.0.0.0"], 
-              server_ports: List[int] = [8000], 
-              group_port: int = 51216, connection_timeout: float = 0.0,
+    def __init__(self,
+        hosts: List[str] = ["0.0.0.0"], 
+        server_ports: List[str] = ['8000'], 
+        group_port: int = 51216, 
+        client_rank: int = 0,
+        connection_timeout: float = 60.0,
     ):
         if not is_requests_available():
             raise ImportError("requests is not installed. Please install it with `pip install requests`.")
@@ -118,6 +120,7 @@ class VLLMClient:
 
         self.hosts = valid_hosts
         self.server_ports = valid_ports
+        self.client_rank = client_rank  # build a client <-> server mapping. If we have 8 servers, we should create 8 clients.
         self.loop.run_until_complete(self.init_communicator())
         atexit.register(self.cleanup)
 
@@ -261,31 +264,23 @@ class VLLMClient:
         """
         Initializes the weight update group in a distributed setup for model synchronization.
         """
-        tasks = []
-
         async def init_single_communicator(session, host, port):
             url_tp = f"http://{host}:{port}/get_tensor_parallel_size/"
-            #url_dp = f"http://{host}:{port}/get_dp_world_size/"
 
             async with session.get(url_tp) as resp_tp:
                 if resp_tp.status != 200:
                     raise Exception(f"Request failed: {resp_tp.status}, {await resp_tp.text()}")
                 tensor_parallel_size = (await resp_tp.json())["tensor_parallel_size"]
 
-            #async with session.get(url_dp) as resp_dp:
-            #    if resp_dp.status != 200:
-            #        raise Exception(f"Request failed: {resp_dp.status}, {await resp_dp.text()}")
-            #    dp_world_size = (await resp_dp.json())["dp_world_size"]
-
-            dp_world_size = len(self.hosts)
-            world_size = tensor_parallel_size * dp_world_size + 1
-            payload = {"host": self.hosts[0], "port": self.group_port, "world_size": world_size}
+            world_size = tensor_parallel_size + 1
+            payload = {"host": '0.0.0.0', "port": self.group_port + self.client_rank, 
+                       "world_size": world_size,
+                       "client_rank": self.client_rank
+                       } # nccl group host is on the server side
             await self._async_post(session, f"http://{host}:{port}/init_communicator/", payload)
             return world_size
 
-        for session, host, port in zip(self.sessions, self.hosts, self.server_ports):
-            tasks.append(init_single_communicator(session, host, port))
-
+        tasks = [init_single_communicator(self.sessions[self.client_rank], self.hosts[self.client_rank], self.server_ports[self.client_rank])]
         results = await asyncio.gather(*tasks)
 
         # Use the world_size from the first result to set rank
@@ -293,8 +288,10 @@ class VLLMClient:
         self.rank = world_size - 1            
 
         # Set up the communication group for weight broadcasting
-        pg = StatelessProcessGroup.create(host=self.hosts[0], port=self.group_port, rank=self.rank, world_size=world_size)
-        self.pynccl_comm = PyNcclCommunicator(pg, device="cuda:0")
+        pg = StatelessProcessGroup.create(host=self.hosts[self.client_rank],
+                                          port=self.group_port + self.client_rank, 
+                                          rank=self.rank, world_size=world_size)
+        self.pynccl_comm = PyNcclCommunicator(pg, device=torch.cuda.current_device())
 
 
     def update_named_param(self, name: str, weights: torch.Tensor):
@@ -308,15 +305,15 @@ class VLLMClient:
         dtype, shape = str(weights.dtype), tuple(weights.shape)
         payload = {"name": name, "dtype": dtype, "shape": shape}
     
-        for host, port in zip(self.hosts, self.server_ports):
-            url = f"http://{host}:{port}/update_named_param/"
-            try:
-                response = requests.post(url, json=payload, timeout=60)
-                if response.status_code != 200:
-                    raise RuntimeError(f"[{host}] Failed to update param '{name}': {response.status_code} {response.text}")
-            except requests.exceptions.RequestException as e:
-                print(f"[ERROR] Failed to send update_named_param to {host}: {e}")
-                raise        
+        host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
+        url = f"http://{host}:{port}/update_named_param/"
+        try:
+            response = requests.post(url, json=payload, timeout=60)
+            if response.status_code != 200:
+                raise RuntimeError(f"[{host}] Failed to update param '{name}': {response.status_code} {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to send update_named_param to {host}: {e}")
+            raise        
     
         # Broadcast the weights to the other processes
         self.pynccl_comm.broadcast(weights, src=self.rank, stream=torch.cuda.current_stream())
@@ -333,40 +330,6 @@ class VLLMClient:
         for name, param in model.named_parameters():
             self.update_named_param(name, param.data)        
 
-    def update_model_in_chunks(self, model: nn.Module, chunk_size: int = 10):
-        named_params = list(model.named_parameters())
-    
-        for i in range(0, len(named_params), chunk_size):
-            chunk = named_params[i:i+chunk_size]
-    
-            # Group params by dtype
-            dtype_groups = defaultdict(list)
-            for name, param in chunk:
-                dtype_groups[str(param.dtype)].append((name, param))
-    
-            # Send each dtype group separately
-            for dtype_str, group in dtype_groups.items():
-                meta, tensors = [], []
-                for name, param in group:
-                    meta.append({
-                        "name": name,
-                        "dtype": dtype_str,
-                        "shape": list(param.shape)
-                    })
-                    tensors.append(param.data.contiguous().flatten())
-    
-                buffer_tensor = torch.cat(tensors).to("cuda")
-
-                # Send metadata via HTTP
-                for host, port in zip(self.hosts, self.server_ports):
-                    url = f"http://{host}:{port}/load_chunked_params/"
-                    response = requests.post(url, json={"params": meta}, timeout=60)
-                    assert response.status_code == 200, f"[ERROR] Failed on {host}: {response.text}"
-    
-                # Broadcast via NCCL
-                self.pynccl_comm.broadcast(buffer_tensor, src=self.rank, stream=torch.cuda.current_stream())
-                self.pynccl_comm.group.barrier()
-                #print(f"[Chunk] Synced {len(group)} params of dtype {dtype_str}")            
 
     def update_model_in_chunks_from_named_list(self, named_params: list[tuple[str, torch.nn.Parameter]]):
         dtype_groups = defaultdict(list)
@@ -383,40 +346,41 @@ class VLLMClient:
                 })
                 tensors.append(param.data.contiguous().flatten())
 
-            for host, port in zip(self.hosts, self.server_ports):
-                url = f"http://{host}:{port}/load_chunked_params/"
-                response = requests.post(url, json={"params": meta}, timeout=60)
-                assert response.status_code == 200
+            host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
+
+            url = f"http://{host}:{port}/load_chunked_params/"
+            response = requests.post(url, json={"params": meta}, timeout=60)
+            assert response.status_code == 200
     
             buffer_tensor = torch.cat(tensors).to("cuda")
             self.pynccl_comm.broadcast(buffer_tensor, src=self.rank, stream=torch.cuda.current_stream())
             self.pynccl_comm.group.barrier()
-    
-    
             #print(f"[Chunk] Synced {len(group)} params of dtype {dtype_str}")                
+
 
     def reset_prefix_cache(self):
         """
         Synchronously resets the prefix cache on all vLLM servers.
         """
-        for host, port in zip(self.hosts, self.server_ports):
-            url = f"http://{host}:{port}/reset_prefix_cache/"
-            try:
-                response = requests.post(url, json={}, timeout=60)
-                if response.status_code != 200:
-                    raise RuntimeError(f"[{host}] Failed to reset prefix cache: {response.status_code} {response.text}")
-            except requests.exceptions.RequestException as e:
-                print(f"[ERROR] Could not reset prefix cache on {host}: {e}")
-                raise Exception(e)
+        host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
+        url = f"http://{host}:{port}/reset_prefix_cache/"
+        try:
+            response = requests.post(url, json={}, timeout=60)
+            if response.status_code != 200:
+                raise RuntimeError(f"[{host}] Failed to reset prefix cache: {response.status_code} {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Could not reset prefix cache on {host}: {e}")
+            raise Exception(e)
 
     async def close_communicator(self):
         """
         Closes the weight update group and cleans up the communication group.
         """
         tasks = []
-        for kk, host in enumerate(self.hosts):
-            url = f"http://{host}:{self.server_ports[kk]}/close_communicator/"
-            tasks.append(self._async_post(self.sessions[kk], url, {}))
+        host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
+        url = f"http://{host}:{port}/close_communicator/"
+
+        tasks.append(self._async_post(self.sessions[self.client_rank], url, {}))
     
         await asyncio.gather(*tasks)        
 

@@ -63,12 +63,8 @@ from transformers.utils import is_peft_available
 
 from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
 from trl.extras.profiling import profiling_context, profiling_decorator
-#from ..extras.vllm_client import VLLMClient
-try:
-    from .utils.vllm_client_v2 import VLLMClient
-except:
-    print("Failed to import VLLMClient !")
-    pass
+
+from .utils.vllm_client_v2 import VLLMClient
 
 from trl.import_utils import is_deepspeed_available, is_rich_available, is_vllm_available
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
@@ -497,6 +493,7 @@ class GRPOTrainerV2(Trainer):
         # transformers if num_generations exceeds per_device_train_batch_size. We could skip it if we use vLLM, but
         # it's safer to set it in all cases.
         set_seed(args.seed, device_specific=True)
+        self.vllm_client = None
 
         if self.use_vllm:
             if not is_vllm_available():
@@ -504,11 +501,37 @@ class GRPOTrainerV2(Trainer):
                     "vLLM is not available and `use_vllm` is set to True. Please install vLLM with "
                     "`pip install vllm` to use it."
                 )
+            vllm_server_hosts = args.vllm_server_host 
+            if isinstance(vllm_server_hosts, str):
+                vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
 
-            if self.accelerator.is_main_process:
+            def get_gateway_client_id(world_size, rank, gpus_per_node, num_clients):
+                num_nodes = world_size // gpus_per_node
+                client_ranks = [
+                    (i % num_nodes) * gpus_per_node + (i // num_nodes)
+                    for i in range(num_clients)
+                ]
+                if rank in client_ranks:
+                    return client_ranks.index(rank)
+                return None
+
+            rank = self.accelerator.process_index
+            world_size = self.accelerator.num_processes
+            gpus_per_node = 8
+            num_clients = len(vllm_server_hosts)
+            
+            client_id = get_gateway_client_id(world_size, rank, gpus_per_node, num_clients)
+
+            # create N=len(hosts) clients
+            if client_id is not None:
                 self.vllm_client = VLLMClient(
-                    args.vllm_server_host, args.vllm_server_port, connection_timeout=args.vllm_server_timeout
+                    vllm_server_host, 
+                    args.vllm_server_port, 
+                    connection_timeout=args.vllm_server_timeout,
+                    client_rank = client_id
                 )
+            else:
+                self.vllm_client = None
 
             # vLLM specific sampling arguments
             self.guided_decoding_regex = args.vllm_guided_decoding_regex
@@ -680,7 +703,7 @@ class GRPOTrainerV2(Trainer):
                         continue
                     name = name.replace("modules_to_save.default.", "")
 
-                    if self.accelerator.is_main_process:
+                    if self.vllm_client is not None:
                         self.vllm_client.update_named_param(name, param.data)
 
                 # Unmerge adapters while parameters are still gathered
@@ -688,59 +711,14 @@ class GRPOTrainerV2(Trainer):
                 # Parameters will automatically be repartitioned when exiting the context
         else:
             # For non-PEFT models, simply gather and update each parameter individually.
-            """
             for name, param in self.model.named_parameters():
                 with gather_if_zero3([param]):
-                    if self.accelerator.is_main_process:
+                    if self.vllm_client is not None:
                         self.vllm_client.update_named_param(name, param.data)
-            """
-            # Define the maximum allowed bytes per chunk (e.g., 1GB)
-            max_bytes = (1024**2) * 100 # 100 MB
-            current_chunk = []         # Accumulates (name, param) tuples
-
-            debug_file = "debug_%s.txt"% self.accelerator.process_index
-            if os.path.exists(debug_file):
-                cmd = "*"*100 + "\nStart move model to vllm!" + "\n"
-                with open(debug_file, 'a') as fout:
-                    fout.write(cmd)
-
-            chunk_bytes = 0
-            for name, param in self.model.named_parameters():
-                with gather_if_zero3([param]):
-                    param_bytes = param.numel() * param.element_size()
-                    current_chunk.append((name, param))
-                    chunk_bytes += param_bytes
-            
-                    if os.path.exists(debug_file):
-                        cmd = f"rank={self.accelerator.process_index},  param name={name}, shape={param.data.shape}\n"
-                        with open(debug_file, 'a') as fout:
-                            fout.write(cmd)
-            
-                    if chunk_bytes >= max_bytes:
-                        if self.accelerator.is_main_process:
-                            cmd = f"rank={self.accelerator.process_index},  send param name={name}, shape={param.data.shape}\n"
-                            with open(debug_file, 'a') as fout:
-                                fout.write(cmd)
-
-                            self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
-                        current_chunk = []
-                        chunk_bytes = 0
-            
-            # Handle the remaining chunk
-            if len(current_chunk) > 0:
-                if self.accelerator.is_main_process:
-                    last_name = current_chunk[-1][0]
-                    last_shape = current_chunk[-1][1].data.shape
-                    cmd = f"rank={self.accelerator.process_index}, send param name={last_name}, shape={last_shape}\n" + \
-                          "End move !\n" + "*" * 100
-                    with open(debug_file, 'a') as fout:
-                        fout.write(cmd)
-                    self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
-                current_chunk = []                    
                         
 
         # Reset cache on main process
-        if self.accelerator.is_main_process:
+        if self.vllm_client is not None:
             self.vllm_client.reset_prefix_cache()
 
     @profiling_decorator
