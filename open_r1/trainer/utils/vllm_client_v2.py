@@ -84,7 +84,9 @@ class VLLMClient:
     """
 
     def __init__(
-        self, hosts: List[str] = ["0.0.0.0"], server_port: int = 8000, group_port: int = 51216, connection_timeout: float = 0.0,
+        self, hosts: List[str] = ["0.0.0.0"], 
+              server_ports: List[int] = [8000], 
+              group_port: int = 51216, connection_timeout: float = 0.0,
     ):
         if not is_requests_available():
             raise ImportError("requests is not installed. Please install it with `pip install requests`.")
@@ -93,8 +95,10 @@ class VLLMClient:
 
         if isinstance(hosts, str):
             hosts = [h.strip() for h in hosts.split(',')]            
+        if isinstance(server_ports, str):
+            server_ports = [e.strip() for e in server_ports.split(',')]
 
-        self.server_port = server_port
+        self.server_ports = server_ports
         self.group_port = group_port
 
         # Create a new persistent event loop running in the background
@@ -105,15 +109,19 @@ class VLLMClient:
         self.sessions = self.loop.run_until_complete(self._create_sessions(hosts))
 
         valid_hosts = []
-        for host in hosts:
-            status = self.check_server(host, connection_timeout)
+        valid_ports = []
+        for host, port in zip(hosts, server_ports):
+            status = self.check_server(host, port, connection_timeout, 10)
             if status:
                 valid_hosts.append(host)
+                valid_ports.append(port)
+
         self.hosts = valid_hosts
+        self.server_ports = valid_ports
         self.loop.run_until_complete(self.init_communicator())
         atexit.register(self.cleanup)
 
-        print(f"VLLMClient connected to server hosts={self.hosts}, port={server_port}")        
+        print(f"VLLMClient connected to server hosts={self.hosts}, port={self.server_ports}")        
 
     def cleanup(self):
         if not self.loop.is_closed():
@@ -130,7 +138,7 @@ class VLLMClient:
             sessions.append(aiohttp.ClientSession())
         return sessions        
 
-    def check_server(self, host, total_timeout: float = 0.0, retry_interval: float = 2.0):
+    def check_server(self, host, port, total_timeout: float = 0.0, retry_interval: float = 2.0):
         """
         Check server availability with retries on failure, within a total timeout duration. If the server is not up
         after the total timeout duration, raise a `ConnectionError`.
@@ -141,7 +149,7 @@ class VLLMClient:
             total_timeout (`float`, *optional*, defaults to `0.0`):
                 Total timeout duration in seconds.
         """
-        url = f"http://{host}:{self.server_port}/health/"
+        url = f"http://{host}:{port}/health/"
         start_time = time.time()  # Record the start time
         _cnt = 0
         while _cnt < 10:
@@ -152,7 +160,7 @@ class VLLMClient:
                 elapsed_time = time.time() - start_time
                 if elapsed_time >= total_timeout:
                     print(
-                        f"The vLLM server can't be reached at {self.host}:{self.server_port} after {total_timeout} "
+                        f"The vLLM server can't be reached at {host}:{port} after {total_timeout} "
                         "seconds. Make sure the server is running by running `trl vllm-serve`."
                     )
             else:
@@ -230,7 +238,7 @@ class VLLMClient:
             if not batch:
                 continue
 
-            url = f"http://{host}:{self.server_port}/chat/"
+            url = f"http://{host}:{self.server_ports[i]}/chat/"
             batch_payload = copy.deepcopy(payload)
             batch_payload["prompts"] = batch
             tasks.append(self._async_post(session, url, batch_payload))
@@ -255,27 +263,28 @@ class VLLMClient:
         """
         tasks = []
 
-        async def init_single_communicator(session, host):
-            url_tp = f"http://{host}:{self.server_port}/get_tensor_parallel_size/"
-            url_dp = f"http://{host}:{self.server_port}/get_dp_world_size/"
+        async def init_single_communicator(session, host, port):
+            url_tp = f"http://{host}:{port}/get_tensor_parallel_size/"
+            #url_dp = f"http://{host}:{port}/get_dp_world_size/"
 
             async with session.get(url_tp) as resp_tp:
                 if resp_tp.status != 200:
                     raise Exception(f"Request failed: {resp_tp.status}, {await resp_tp.text()}")
                 tensor_parallel_size = (await resp_tp.json())["tensor_parallel_size"]
 
-            async with session.get(url_dp) as resp_dp:
-                if resp_dp.status != 200:
-                    raise Exception(f"Request failed: {resp_dp.status}, {await resp_dp.text()}")
-                dp_world_size = (await resp_dp.json())["dp_world_size"]
+            #async with session.get(url_dp) as resp_dp:
+            #    if resp_dp.status != 200:
+            #        raise Exception(f"Request failed: {resp_dp.status}, {await resp_dp.text()}")
+            #    dp_world_size = (await resp_dp.json())["dp_world_size"]
 
+            dp_world_size = len(self.hosts)
             world_size = tensor_parallel_size * dp_world_size + 1
             payload = {"host": self.hosts[0], "port": self.group_port, "world_size": world_size}
-            await self._async_post(session, f"http://{host}:{self.server_port}/init_communicator/", payload)
+            await self._async_post(session, f"http://{host}:{port}/init_communicator/", payload)
             return world_size
 
-        for session, host in zip(self.sessions, self.hosts):
-            tasks.append(init_single_communicator(session, host))
+        for session, host, port in zip(self.sessions, self.hosts, self.server_ports):
+            tasks.append(init_single_communicator(session, host, port))
 
         results = await asyncio.gather(*tasks)
 
@@ -299,8 +308,8 @@ class VLLMClient:
         dtype, shape = str(weights.dtype), tuple(weights.shape)
         payload = {"name": name, "dtype": dtype, "shape": shape}
     
-        for host in self.hosts:
-            url = f"http://{host}:{self.server_port}/update_named_param/"
+        for host, port in zip(self.hosts, self.server_ports):
+            url = f"http://{host}:{port}/update_named_param/"
             try:
                 response = requests.post(url, json=payload, timeout=60)
                 if response.status_code != 200:
@@ -324,7 +333,7 @@ class VLLMClient:
         for name, param in model.named_parameters():
             self.update_named_param(name, param.data)        
 
-    def update_model_in_chunks(self, model: nn.Module, chunk_size: int = 50):
+    def update_model_in_chunks(self, model: nn.Module, chunk_size: int = 10):
         named_params = list(model.named_parameters())
     
         for i in range(0, len(named_params), chunk_size):
@@ -347,25 +356,51 @@ class VLLMClient:
                     tensors.append(param.data.contiguous().flatten())
     
                 buffer_tensor = torch.cat(tensors).to("cuda")
+
+                # Send metadata via HTTP
+                for host, port in zip(self.hosts, self.server_ports):
+                    url = f"http://{host}:{port}/load_chunked_params/"
+                    response = requests.post(url, json={"params": meta}, timeout=60)
+                    assert response.status_code == 200, f"[ERROR] Failed on {host}: {response.text}"
     
                 # Broadcast via NCCL
                 self.pynccl_comm.broadcast(buffer_tensor, src=self.rank, stream=torch.cuda.current_stream())
                 self.pynccl_comm.group.barrier()
-    
-                # Send metadata via HTTP
-                for host in self.hosts:
-                    url = f"http://{host}:{self.server_port}/load_chunked_params/"
-                    response = requests.post(url, json={"params": meta}, timeout=60)
-                    assert response.status_code == 200, f"[ERROR] Failed on {host}: {response.text}"
-    
                 #print(f"[Chunk] Synced {len(group)} params of dtype {dtype_str}")            
+
+    def update_model_in_chunks_from_named_list(self, named_params: list[tuple[str, torch.nn.Parameter]]):
+        dtype_groups = defaultdict(list)
+        for name, param in named_params:
+            dtype_groups[str(param.dtype)].append((name, param))
+    
+        for dtype_str, group in dtype_groups.items():
+            meta, tensors = [], []
+            for name, param in group:
+                meta.append({
+                    "name": name,
+                    "dtype": dtype_str,
+                    "shape": list(param.shape)
+                })
+                tensors.append(param.data.contiguous().flatten())
+
+            for host, port in zip(self.hosts, self.server_ports):
+                url = f"http://{host}:{port}/load_chunked_params/"
+                response = requests.post(url, json={"params": meta}, timeout=60)
+                assert response.status_code == 200
+    
+            buffer_tensor = torch.cat(tensors).to("cuda")
+            self.pynccl_comm.broadcast(buffer_tensor, src=self.rank, stream=torch.cuda.current_stream())
+            self.pynccl_comm.group.barrier()
+    
+    
+            #print(f"[Chunk] Synced {len(group)} params of dtype {dtype_str}")                
 
     def reset_prefix_cache(self):
         """
         Synchronously resets the prefix cache on all vLLM servers.
         """
-        for host in self.hosts:
-            url = f"http://{host}:{self.server_port}/reset_prefix_cache/"
+        for host, port in zip(self.hosts, self.server_ports):
+            url = f"http://{host}:{port}/reset_prefix_cache/"
             try:
                 response = requests.post(url, json={}, timeout=60)
                 if response.status_code != 200:
@@ -380,7 +415,7 @@ class VLLMClient:
         """
         tasks = []
         for kk, host in enumerate(self.hosts):
-            url = f"http://{host}:{self.server_port}/close_communicator/"
+            url = f"http://{host}:{self.server_ports[kk]}/close_communicator/"
             tasks.append(self._async_post(self.sessions[kk], url, {}))
     
         await asyncio.gather(*tasks)        

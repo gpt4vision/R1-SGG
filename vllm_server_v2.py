@@ -146,7 +146,8 @@ class WeightSyncWorker(Worker):
                 numel = torch.Size(meta["shape"]).numel()
                 chunk = flat_tensor[offset:offset + numel].view(meta["shape"])
                 offset += numel
-                self.model.load_weights([(meta["name"], chunk)])
+                print(os.getpid(), "received param:", meta, " chunk", chunk.shape) 
+                self.model_runner.model.load_weights([(meta["name"], chunk)])
 
 
     def close_communicator(self) -> None:
@@ -252,6 +253,7 @@ def main(script_args: ScriptArguments):
     async def health():
         return {"status": "ok"}
 
+
     @app.get("/get_tensor_parallel_size/")
     async def get_tensor_parallel_size():
         return {"tensor_parallel_size": llm.llm_engine.parallel_config.tensor_parallel_size}
@@ -308,9 +310,10 @@ def main(script_args: ScriptArguments):
 
     @app.post("/init_communicator/")
     async def init_communicator(request: InitCommunicatorRequest, background_tasks: BackgroundTasks):
-        wsize = int(os.environ['DP_WORLD_SIZE'])
+        #wsize = int(os.environ['DP_WORLD_SIZE'])
+        #total_workers = script_args.tensor_parallel_size * wsize + 1
+        total_workers = request.world_size
 
-        total_workers = script_args.tensor_parallel_size * wsize + 1
         background_tasks.add_task(
             llm.collective_rpc,
             "init_communicator",
