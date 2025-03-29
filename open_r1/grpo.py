@@ -332,7 +332,7 @@ def format_reward(completions, **kwargs):
                 rewards.append(reward)
             else:
                 rewards.append(0.0)
-        except json.JSONDecodeError:
+        except Exception:
             rewards.append(0.0)
 
         if DEBUG_MODE:

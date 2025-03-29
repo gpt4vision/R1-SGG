@@ -695,18 +695,28 @@ class GRPOTrainerV2(Trainer):
                         self.vllm_client.update_named_param(name, param.data)
             """
             # Define the maximum allowed bytes per chunk (e.g., 1GB)
-            max_bytes = (1024**2) * 100 # 100 MB
+            max_bytes = (1024**2) * 400 # 400 MB
             current_chunk = []         # Accumulates (name, param) tuples
             current_chunk_bytes = 0    # Total size in bytes for the current chunk
-            
+            debug_file = "debug_%s.txt"% self.accelerator.process_index
+            if os.path.exists(debug_file):
+                cmd = "*"*100 + "\nStart move model to vllm!" + "\n"
+                with open(debug_file, 'a') as fout:
+                    fout.write(cmd)
+
             for name, param in self.model.named_parameters():
                 with gather_if_zero3([param]):
+                    if os.path.exists(debug_file):
+                        cmd = f"rank={self.accelerator.process_index},  param name={name}, shape={param.data.shape}\n"
+                        with open(debug_file, 'a') as fout:
+                            fout.write(cmd)
+                    # only master rank 
                     if self.accelerator.is_main_process:
                         param_bytes = param.numel() * param.element_size()
                         if current_chunk_bytes + param_bytes >= max_bytes:
-                            self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
-                            current_chunk = []
-                            current_chunk_bytes = 0
+                                self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
+                                current_chunk = []
+                                current_chunk_bytes = 0
                         else:
                             # Otherwise, add the parameter to the current chunk
                             current_chunk.append((name, param))
@@ -714,9 +724,13 @@ class GRPOTrainerV2(Trainer):
 
             if len(current_chunk) > 0:
                 if self.accelerator.is_main_process:
+                    cmd = f"rank={self.accelerator.process_index}, send param name={name}, shape={param.data.shape}\n" + \
+                            "End move !\n" + "*"*100
+                    with open(debug_file, 'a') as fout:
+                        fout.write(cmd)
                     self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
                     current_chunk = []
-
+                    current_chunk_bytes = 0
                         
 
         # Reset cache on main process
