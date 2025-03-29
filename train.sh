@@ -23,7 +23,7 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 # export CUDA_LAUNCH_BLOCKING=1
 
 # wait for vLLM servers
-#sleep 60
+sleep 60
 
 # Read IPs from file and join them with commas
 #ip_str=$(paste -sd, ip_list.txt)
