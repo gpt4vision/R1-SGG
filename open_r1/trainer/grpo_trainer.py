@@ -525,7 +525,7 @@ class GRPOTrainerV2(Trainer):
             # create N=len(hosts) clients
             if client_id is not None:
                 self.vllm_client = VLLMClient(
-                    vllm_server_host, 
+                    vllm_server_hosts, 
                     args.vllm_server_port, 
                     connection_timeout=args.vllm_server_timeout,
                     client_rank = client_id

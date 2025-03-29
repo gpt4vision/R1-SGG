@@ -85,11 +85,6 @@ class WeightSyncWorker(Worker):
             raise ImportError(
                 "vLLM is required to use the WeightSyncWorker. Please install it using `pip install vllm`."
             )
-        node_rank = int(os.environ['RANK'])
-        tp_size = int(os.environ['TP_SIZE'])
-        wsize = int(os.environ['DP_WORLD_SIZE'])
-        print("node_rank:", node_rank, " tp size:", tp_size, " wsize:", wsize)
-
         super().__init__(*args, **kwargs)
         self.pynccl_comm = None  # Communicator for weight updates
         self.client_rank = None  # Source rank for broadcasting updated weights
@@ -99,13 +94,9 @@ class WeightSyncWorker(Worker):
             raise RuntimeError("Weight update group already initialized. Call close_communicator first.")
         rank = get_world_group().rank
         # 
-        node_rank = int(os.environ['RANK'])
-        tp_size = int(os.environ['TP_SIZE'])
-        current_rank = rank + node_rank * tp_size
-        print(f"RANK: {rank}, node rank:{node_rank}, global rank:{current_rank}, world_size:{world_size} -- init_communicator")
-
         pg = StatelessProcessGroup.create(host=host, port=port, 
-                        rank=current_rank, world_size=world_size)
+                        rank=rank, 
+                        world_size=world_size)
 
         self.pynccl_comm = PyNcclCommunicator(pg, device=self.device)
         self.client_rank = world_size - 1
@@ -117,11 +108,6 @@ class WeightSyncWorker(Worker):
         self.pynccl_comm.broadcast(weight, src=self.client_rank, stream=torch.cuda.current_stream())
         self.pynccl_comm.group.barrier()
 
-        rank = get_world_group().rank
-        node_rank = int(os.environ['RANK'])
-        tp_size = int(os.environ['TP_SIZE'])
-        current_rank = rank + node_rank * tp_size
-        #print(f"RANK: {rank}, Node rank:{node_rank}, global rank:{current_rank}  -- update_named_param:{name}, weight.data.norm():", weight.data.norm())
         self.model_runner.model.load_weights(weights=[(name, weight)])
 
     def load_chunked_params(self, param_meta: List[dict]):

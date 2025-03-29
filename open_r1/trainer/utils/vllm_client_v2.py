@@ -42,46 +42,15 @@ logger = logging.getLogger(__name__)
 
 class VLLMClient:
     """
-    A client class to interact with a vLLM server.
-
-    This class provides methods to generate completions, initialize and manage weight update groups, and update model
-    weights in a distributed setting. Before using it, start the vLLM server with `trl vllm-serve`.
+    A client class to interact with a vLLM server for inference and distributed parameter updates.
 
     Args:
-        host (`str`, *optional*, defaults to `"0.0.0.0"`):
-            IP address of the vLLM server.
-        server_port (`int`, *optional*, defaults to `8000`):
-            Port number of the vLLM server.
-        group_port (`int`, *optional*, defaults to `51216`):
-            Port number for the weight update group.
-        connection_timeout (`float`, *optional*, defaults to `0.0`):
-            Total timeout duration in seconds to wait for the server to be up. If the server is not up after the
-            timeout, a `ConnectionError` is raised.
-
-    Examples:
-        Run the vLLM server with the model `Qwen/Qwen2.5-7B`:
-
-        ```
-        $ trl vllm-serve --model Qwen/Qwen2.5-7B
-        ...
-        INFO:     Application startup complete.
-        INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-        ```
-
-        Use the client to generate completions and update model weights:
-
-        ```python
-        >>> from trl.extras.vllm_client import VLLMClient
-        >>> client = VLLMClient()
-        >>> client.generate(["Hello, AI!", "Tell me a joke"])
-        [[2980, 498, 1492, 752, 448, 264, 13027, 8645, 30, 358, 2776, 4460, 311, 3270, 264, 2025],
-         [911, 7988, 1251, 382, 3838, 653, 498, 1618, 4325, 879, 2581, 20027, 264, 21428, 30, 362]]
-
-        >>> from transformers import AutoModelForCausalLM
-        >>> model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B", device_map="cuda")
-        >>> client.update_model_params(model)
-        ```
-    """
+        hosts (List[str], optional): List of IPs of vLLM servers. Default is ["0.0.0.0"].
+        server_ports (List[str], optional): List of ports of vLLM servers. Default is ['8000'].
+        group_port (int, optional): Base port for weight synchronization. Default is 51216.
+        client_rank (int, optional): Rank of this client in a distributed setup. Default is 0.
+        connection_timeout (float, optional): Time in seconds to wait for server readiness. Default is 60.0.
+    """    
 
     def __init__(self,
         hosts: List[str] = ["0.0.0.0"], 
@@ -109,6 +78,7 @@ class VLLMClient:
 
         # Initialize sessions and communicator
         self.sessions = self.loop.run_until_complete(self._create_sessions(hosts))
+        self.connection_timeout = connection_timeout
 
         valid_hosts = []
         valid_ports = []
@@ -127,6 +97,7 @@ class VLLMClient:
         print(f"VLLMClient connected to server hosts={self.hosts}, port={self.server_ports}")        
 
     def cleanup(self):
+        """Cleans up communicator and sessions on exit."""
         if not self.loop.is_closed():
             self.loop.run_until_complete(self.close_communicator())
             self.loop.run_until_complete(self.close_sessions())
@@ -273,7 +244,8 @@ class VLLMClient:
                 tensor_parallel_size = (await resp_tp.json())["tensor_parallel_size"]
 
             world_size = tensor_parallel_size + 1
-            payload = {"host": '0.0.0.0', "port": self.group_port + self.client_rank, 
+            payload = {"host": host, 
+                       "port": self.group_port + self.client_rank, 
                        "world_size": world_size,
                        "client_rank": self.client_rank
                        } # nccl group host is on the server side
@@ -308,7 +280,7 @@ class VLLMClient:
         host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
         url = f"http://{host}:{port}/update_named_param/"
         try:
-            response = requests.post(url, json=payload, timeout=60)
+            response = requests.post(url, json=payload, timeout=self.connection_timeout)
             if response.status_code != 200:
                 raise RuntimeError(f"[{host}] Failed to update param '{name}': {response.status_code} {response.text}")
         except requests.exceptions.RequestException as e:
@@ -332,6 +304,10 @@ class VLLMClient:
 
 
     def update_model_in_chunks_from_named_list(self, named_params: list[tuple[str, torch.nn.Parameter]]):
+        """
+        Efficiently update model weights in dtype-wise chunks.
+
+        """
         dtype_groups = defaultdict(list)
         for name, param in named_params:
             dtype_groups[str(param.dtype)].append((name, param))
@@ -349,7 +325,7 @@ class VLLMClient:
             host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
 
             url = f"http://{host}:{port}/load_chunked_params/"
-            response = requests.post(url, json={"params": meta}, timeout=60)
+            response = requests.post(url, json={"params": meta}, timeout=self.connection_timeout)
             assert response.status_code == 200
     
             buffer_tensor = torch.cat(tensors).to("cuda")
@@ -365,7 +341,7 @@ class VLLMClient:
         host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
         url = f"http://{host}:{port}/reset_prefix_cache/"
         try:
-            response = requests.post(url, json={}, timeout=60)
+            response = requests.post(url, json={}, timeout=self.connection_timeout)
             if response.status_code != 200:
                 raise RuntimeError(f"[{host}] Failed to reset prefix cache: {response.status_code} {response.text}")
         except requests.exceptions.RequestException as e:
