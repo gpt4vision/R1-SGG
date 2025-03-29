@@ -77,6 +77,8 @@ export MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 
 export NODE_RANK=${SLURM_NODEID}  # Provided by SLURM
 
+MAX_PIXELS=$((512 * 28 * 28))
+
 # Launch distributed training on the training nodes using 8 GPUs per node
 srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
@@ -85,10 +87,10 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --rdzv_backend c10d \
     --rdzv_endpoint ${HEAD_NODE_IP}:29500 \
     open_r1/grpo.py \
-    --output_dir models/qwen2vl-zero-g8 \
+    --output_dir models/qwen2vl-1k-g8 \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name $DATA_PATH \
-    --deepspeed ./local_scripts/zero3_hpz.json \
+    --deepspeed ./local_scripts/zero3.json \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
     --per_device_train_batch_size 1 \
@@ -101,11 +103,11 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --bf16 \
     --report_to wandb \
     --gradient_checkpointing true \
-    --max_pixels 401408 \
-    --temperature 0.7 \
-    --top_p 0.01 \
+    --max_pixels ${MAX_PIXELS} \
+    --temperature 0.3 \
+    --top_p 0.001 \
     --top_k 1 \
     --num_train_epochs 1 \
-    --run_name Qwen2VL-7B-GRPO-zero-G8 \
+    --run_name Qwen2VL-7B-GRPO-1k-G8 \
     --save_steps 100 \
     --num_generations 8

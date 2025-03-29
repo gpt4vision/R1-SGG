@@ -93,7 +93,7 @@ def extract_answer_content(text: str) -> str:
 
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=4096)
 def get_doc(word: str):
     return nlp(word)
 
@@ -153,7 +153,7 @@ def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WE
     return assignments
 
 
-def node_reward(completions, solution, **kwargs):
+def node_acc_reward(completions, solution, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
@@ -178,8 +178,10 @@ def node_reward(completions, solution, **kwargs):
                 match_objects.append(
                     f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                 )
-                reward += (SEM_WEIGHT * category_semantic_similarity(gt_id, pred_id) +
-                           IOU_WEIGHT * compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']))
+                #reward += (SEM_WEIGHT * category_semantic_similarity(gt_id, pred_id) +
+                #           IOU_WEIGHT * compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']))
+                reward +=  category_semantic_similarity(gt_id, pred_id)
+
             reward /= len(gt_objs) if gt_objs else 1
         except Exception:
             reward = 0.0
@@ -187,13 +189,55 @@ def node_reward(completions, solution, **kwargs):
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Node-level Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} Node-level Acc. Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
+def node_iou_reward(completions, solution, **kwargs):
+    """Compute node-level rewards."""
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+
+    for content, sol in zip(contents, solution):
+        reward = 0.0
+        match_objects = []
+        try:
+            gt_objs = sol['objects']
+            # gt_rels is not used here but kept for consistency with edge_reward
+            preds = json.loads(extract_answer_content(content))
+            pred_objs = preds['objects']
+
+            assignments = bi_match(gt_objs, pred_objs, SEM_WEIGHT, IOU_WEIGHT)
+            for assign in assignments:
+                gt_id = assign['groundtruth']['id']
+                pred_entry = assign['prediction']
+                if pred_entry is None or pred_entry.get('id') is None:
+                    continue
+                pred_id = pred_entry['id']
+                match_objects.append(
+                    f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
+                )
+                #reward += (SEM_WEIGHT * category_semantic_similarity(gt_id, pred_id) +
+                #           IOU_WEIGHT * compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']))
+                reward += compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox'])
+
+            reward /= len(gt_objs) if gt_objs else 1
+        except Exception:
+            reward = 0.0
+
+        rewards.append(reward)
+        if DEBUG_MODE:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"------------- {current_time} Node-level IoU Reward {reward:.3f} -------------\n")
+                f.write(f"content: {content}\n")
+                f.write(f"solution: {sol}\n")
+                if match_objects:
+                    f.write(f"Match objects: {match_objects}\n")
+    return rewards
 
 def edge_reward(completions, solution, **kwargs):
     """Compute edge-level rewards."""
@@ -276,8 +320,16 @@ def format_reward(completions, **kwargs):
         try:
             answer_json = json.loads(extract_answer_content(answer_content))
             if isinstance(answer_json, dict) and "objects" in answer_json and "relationships" in answer_json:
-                reward = 1.0
-                rewards.append(1.0)
+                objs = set([e['id'] for e in answer_json["objects"]])
+                obj_valid = True
+                for rel in answer_json["relationships"]:
+                    sub = rel["subject"]
+                    obj = rel["object"]
+                    if (sub not in objs) or (obj not in objs):
+                        obj_valid = False
+                
+                reward = 1.0 if obj_valid else 0.0
+                rewards.append(reward)
             else:
                 rewards.append(0.0)
         except json.JSONDecodeError:
@@ -294,7 +346,8 @@ def format_reward(completions, **kwargs):
 # Reward functions registry
 reward_funcs_registry = {
     "format": format_reward,
-    "node_reward": node_reward,
+    "node_acc_reward": node_acc_reward,
+    "node_iou_reward": node_iou_reward,
     "edge_reward": edge_reward,
     # "diversity_reward": diversity_reward
 }
@@ -307,8 +360,31 @@ SYSTEM_PROMPT = (
 )
 
 
+
+def resize_image(img, fix_length=512, resize=True, shortest_side=False):
+    if not resize:
+        return 1.0, img
+
+    width, height = img.size
+    if shortest_side:
+        ratio = fix_length / min(width, height)
+    else:
+        ratio = fix_length / max(width, height)
+
+    new_width = int(width * ratio)
+    new_height = int(height * ratio)
+    scale = (new_width / width, new_height / height)
+    return scale, img.resize((new_width, new_height))
+
+
+def scale_box(box, scale):
+    sw, sh = scale
+    assert len(box) == 4, " len(box) != 4 "
+    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
+
+
 def main(script_args, training_args, model_args):
-    script_args.reward_funcs = ['format', 'node_reward', "edge_reward"]
+    script_args.reward_funcs = ['format', 'node_acc_reward', "node_iou_reward",  "edge_reward"]
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
@@ -324,13 +400,23 @@ def main(script_args, training_args, model_args):
         def __call__(self, examples):
             batch = []
             for example in examples:
+                image = example["image"].convert('RGB') 
+                org_iw, org_ih = image.size
+                box_scale, image = resize_image(image, 512, resize=True)
+                new_iw, new_ih = image.size
+
+                org_prompt = example['prompt_open']
+                org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", f"({new_iw} x {new_ih})")
+
                 prompt = [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": [
                             {"type": "image"},
-                            {"type": "text", "text": replace_answer_format(example["prompt_open"])}
+                            {"type": "text", 
+                             "text": replace_answer_format(org_prompt)
+                            }
                         ]
                     }
                 ]
@@ -341,19 +427,17 @@ def main(script_args, training_args, model_args):
                 if not isinstance(gt_rels, (list, tuple)):
                     gt_rels = json.loads(gt_rels)
 
+                new_objs = []
+                for obj in gt_objs:
+                    obj['bbox'] = scale_box(obj['bbox'], box_scale)
+                    new_objs.append(obj)
+                gt_objs = new_objs
+
                 scene_graph = {"objects": gt_objs, "relationships": gt_rels}
-                batch.append({"prompt": prompt, "image": example["image"].convert('RGB'), "solution": scene_graph})
+                batch.append({"prompt": prompt, 
+                              "image": image, 
+                              "solution": scene_graph})
 
-            #prompts_text = [maybe_apply_chat_template(example, self.processor)["prompt"] for example in batch]
-            #images = [x["image"] for x in batch]
-
-            #prompt_inputs = self.processor(
-            #    text=prompts_text, images=images,
-            #    return_tensors="pt", padding=True,
-            #    padding_side="left", add_special_tokens=False,
-            #)
-
-            #return batch, prompt_inputs            
             return batch
 
     try:

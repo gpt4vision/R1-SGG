@@ -695,43 +695,28 @@ class GRPOTrainerV2(Trainer):
                         self.vllm_client.update_named_param(name, param.data)
             """
             # Define the maximum allowed bytes per chunk (e.g., 1GB)
-            max_bytes = 0.4 * 1024**3  # 0.4GB; adjust as needed
-            
+            max_bytes = (1024**2) * 100 # 100 MB
             current_chunk = []         # Accumulates (name, param) tuples
             current_chunk_bytes = 0    # Total size in bytes for the current chunk
             
             for name, param in self.model.named_parameters():
-                # Calculate memory footprint of the parameter
-                param_bytes = param.numel() * param.element_size()
-                
-                # If the current chunk is non-empty and adding this parameter would exceed max_bytes,
-                # process the current chunk immediately.
-                if current_chunk and (current_chunk_bytes + param_bytes > max_bytes):
-                    param_chunk = [p for _, p in current_chunk]
-                    with gather_if_zero3(param_chunk):
-                        if self.accelerator.is_main_process:
-                            self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
-                    current_chunk = []
-                    current_chunk_bytes = 0
-            
-                # If a single parameter is larger than max_bytes and the current chunk is empty,
-                # process it individually.
-                if not current_chunk and param_bytes > max_bytes:
-                    with gather_if_zero3([param]):
-                        if self.accelerator.is_main_process:
-                            self.vllm_client.update_model_in_chunks_from_named_list([(name, param)])
-                    continue
-            
-                # Otherwise, add the parameter to the current chunk
-                current_chunk.append((name, param))
-                current_chunk_bytes += param_bytes
-            
-            # Process any remaining parameters after the loop
-            if current_chunk:
-                param_chunk = [p for _, p in current_chunk]
-                with gather_if_zero3(param_chunk):
+                with gather_if_zero3([param]):
                     if self.accelerator.is_main_process:
-                        self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)                        
+                        param_bytes = param.numel() * param.element_size()
+                        if current_chunk_bytes + param_bytes >= max_bytes:
+                            self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
+                            current_chunk = []
+                            current_chunk_bytes = 0
+                        else:
+                            # Otherwise, add the parameter to the current chunk
+                            current_chunk.append((name, param))
+                            current_chunk_bytes += param_bytes
+
+            if len(current_chunk) > 0:
+                if self.accelerator.is_main_process:
+                    self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
+                    current_chunk = []
+
                         
 
         # Reset cache on main process

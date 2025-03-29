@@ -30,7 +30,7 @@ echo "DP_WORLD_SIZE : ${DP_WORLD_SIZE}"
 echo "Node list: ${nodes[@]}"
 
 # ------------------ Export IPs and Ports ------------------
-IP_FILE=ip_port_list2.txt
+IP_FILE=ip_port_list.txt
 
 > ${IP_FILE}  # Reset output list
 
