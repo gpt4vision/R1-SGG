@@ -233,17 +233,9 @@ class GRPOConfig(TrainingArguments):
         default="0.0.0.0",
         metadata={"help": "Host of the vLLM server to connect to."},
     )
-    vllm_server_port: int = field(
-        default=8000,
+    vllm_server_port: str = field(
+        default='8000',
         metadata={"help": "Port of the vLLM server to connect to."},
-    )
-    vllm_ref_server_host: str = field(
-        default="0.0.0.0",
-        metadata={"help": "Host of the vLLM server (Reference model) to connect to."},
-    )
-    vllm_ref_server_port: int = field(
-        default=8000,
-        metadata={"help": "Port of the vLLM server (Reference model) to connect to."},
     )
     vllm_server_timeout: float = field(
         default=120.0,

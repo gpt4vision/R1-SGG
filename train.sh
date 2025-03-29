@@ -26,10 +26,26 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 #sleep 60
 
 # Read IPs from file and join them with commas
-ip_str=$(paste -sd, ip_list.txt)
+#ip_str=$(paste -sd, ip_list.txt)
+#echo "vLLM servers: $ip_str"
 
-# Print or use the resulting string
-echo "vLLM servers: $ip_str"
+FILE="ip_port_list.txt"
+
+SERVER_IP=""
+SERVER_PORT=""
+
+while IFS=: read -r ip port; do
+    SERVER_IP+="${ip},"
+    SERVER_PORT+="${port},"
+done < "$FILE"
+
+# Remove trailing commas
+SERVER_IP="${SERVER_IP%,}"
+SERVER_PORT="${SERVER_PORT%,}"
+
+echo "SERVER_IP=$SERVER_IP"
+echo "SERVER_PORT=$SERVER_PORT"
+
 
 # Define node counts
 NUM_TRAIN_NODES=16
@@ -72,16 +88,16 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --output_dir models/qwen2vl-zero-g8 \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name $DATA_PATH \
-    --deepspeed ./local_scripts/zero3.json \
+    --deepspeed ./local_scripts/zero3_hpz.json \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 1 \
     --logging_steps 1 \
     --use_vllm true \
-    --vllm_server_host ${ip_str} \
-    --vllm_server_port ${PORT_A} \
-    --vllm_server_timeout 360 \
+    --vllm_server_host ${SERVER_IP} \
+    --vllm_server_port ${SERVER_PORT} \
+    --vllm_server_timeout 600 \
     --bf16 \
     --report_to wandb \
     --gradient_checkpointing true \

@@ -694,17 +694,44 @@ class GRPOTrainerV2(Trainer):
                     if self.accelerator.is_main_process:
                         self.vllm_client.update_named_param(name, param.data)
             """
-            # Manually chunk the model parameters
-            named_params = list(self.model.named_parameters())
-            chunk_size = 10  # or tune based on memory
+            # Define the maximum allowed bytes per chunk (e.g., 1GB)
+            max_bytes = 0.4 * 1024**3  # 0.4GB; adjust as needed
             
-            for i in range(0, len(named_params), chunk_size):
-                chunk = named_params[i:i+chunk_size]
-                param_chunk = [p for _, p in chunk]
+            current_chunk = []         # Accumulates (name, param) tuples
+            current_chunk_bytes = 0    # Total size in bytes for the current chunk
             
+            for name, param in self.model.named_parameters():
+                # Calculate memory footprint of the parameter
+                param_bytes = param.numel() * param.element_size()
+                
+                # If the current chunk is non-empty and adding this parameter would exceed max_bytes,
+                # process the current chunk immediately.
+                if current_chunk and (current_chunk_bytes + param_bytes > max_bytes):
+                    param_chunk = [p for _, p in current_chunk]
+                    with gather_if_zero3(param_chunk):
+                        if self.accelerator.is_main_process:
+                            self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)
+                    current_chunk = []
+                    current_chunk_bytes = 0
+            
+                # If a single parameter is larger than max_bytes and the current chunk is empty,
+                # process it individually.
+                if not current_chunk and param_bytes > max_bytes:
+                    with gather_if_zero3([param]):
+                        if self.accelerator.is_main_process:
+                            self.vllm_client.update_model_in_chunks_from_named_list([(name, param)])
+                    continue
+            
+                # Otherwise, add the parameter to the current chunk
+                current_chunk.append((name, param))
+                current_chunk_bytes += param_bytes
+            
+            # Process any remaining parameters after the loop
+            if current_chunk:
+                param_chunk = [p for _, p in current_chunk]
                 with gather_if_zero3(param_chunk):
                     if self.accelerator.is_main_process:
-                        self.vllm_client.update_model_in_chunks_from_named_list(chunk)
+                        self.vllm_client.update_model_in_chunks_from_named_list(current_chunk)                        
                         
 
         # Reset cache on main process
@@ -731,6 +758,7 @@ class GRPOTrainerV2(Trainer):
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         # 
+        llm_inputs = []
         if self.is_qwen2vl:
             """
                 base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
@@ -750,22 +778,7 @@ class GRPOTrainerV2(Trainer):
                     ]
                 example={"prompt": messages, "image": image}
             """
-            prompts = [x["prompt"] for x in inputs]
-            prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-            images = [x["image"] for x in inputs]
-            prompt_inputs = self.processing_class(
-                text=prompts_text, images=images, 
-                return_tensors="pt", padding=True,
-                padding_side="left", add_special_tokens=False,
-            )
-            prompt_inputs = super()._prepare_inputs(prompt_inputs)
-
-            prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-            pixel_values = prompt_inputs["pixel_values"]
-            image_grid_thw = prompt_inputs["image_grid_thw"]            
-
             if self.use_vllm: # prepare data for vLLM servers
-                llm_inputs = []
                 for example in inputs:
                     assert is_pil_image(example['image']), "image is not PIL.Image!"
 
@@ -779,6 +792,20 @@ class GRPOTrainerV2(Trainer):
                             prompt_item[idx] = item 
 
                     llm_inputs.append(json.dumps(prompt_item))
+
+            prompts = [x["prompt"] for x in inputs]
+            prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+            images = [x["image"] for x in inputs]
+            prompt_inputs = self.processing_class(
+                text=prompts_text, images=images, 
+                return_tensors="pt", padding=True,
+                padding_side="left", add_special_tokens=False,
+            )
+            prompt_inputs = super()._prepare_inputs(prompt_inputs)
+
+            prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+            pixel_values = prompt_inputs["pixel_values"]
+            image_grid_thw = prompt_inputs["image_grid_thw"]            
         else:
             """
                 example = {"prompt": [{"role": "user", "content": "What color is the sky?"}]}

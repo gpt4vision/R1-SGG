@@ -342,7 +342,7 @@ def main(script_args, training_args, model_args):
                     gt_rels = json.loads(gt_rels)
 
                 scene_graph = {"objects": gt_objs, "relationships": gt_rels}
-                batch.append({"prompt": prompt, "image": example["image"], "solution": scene_graph})
+                batch.append({"prompt": prompt, "image": example["image"].convert('RGB'), "solution": scene_graph})
 
             #prompts_text = [maybe_apply_chat_template(example, self.processor)["prompt"] for example in batch]
             #images = [x["image"] for x in batch]
