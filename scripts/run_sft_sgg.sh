@@ -39,7 +39,7 @@ srun torchrun --nnodes ${SLURM_NNODES} \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
     --rdzv_endpoint ${head_node_ip}:29500 \
-    sft_sgg.py \
+    src/sft_sgg.py \
     --deepspeed configs/zero3.json \
     --model_name_or_path Qwen/Qwen2-VL-7B-Instruct \
     --dataset_name JosephZ/vg150_train_sgg_prompt \
