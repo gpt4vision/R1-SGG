@@ -58,6 +58,9 @@ from transformers import (
     Qwen2_5_VLForConditionalGeneration,
 )
 
+from accelerate.utils import DistributedType
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
@@ -517,7 +520,7 @@ class GRPOTrainerV2(Trainer):
 
             rank = self.accelerator.process_index
             world_size = self.accelerator.num_processes
-            gpus_per_node = 8
+            gpus_per_node = torch.cuda.device_count()
             num_clients = len(vllm_server_hosts)
             
             client_id = get_gateway_client_id(world_size, rank, gpus_per_node, num_clients)
@@ -685,6 +688,7 @@ class GRPOTrainerV2(Trainer):
         deepspeed_plugin = self.accelerator.state.deepspeed_plugin
         zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
         gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
+        is_fsdp_used = (self.accelerator.distributed_type == DistributedType.FSDP)
 
         if is_peft_model(self.model):
             # With PEFT and DeepSpeed ZeRO Stage 3, we must gather the full model at once before merging, as merging
@@ -711,37 +715,62 @@ class GRPOTrainerV2(Trainer):
                 # Parameters will automatically be repartitioned when exiting the context
         else:
             # For non-PEFT models, simply gather and update each parameter individually.
-            """
-            for name, param in self.model.named_parameters():
-                with gather_if_zero3([param]):
-                    if self.vllm_client is not None:
-                        self.vllm_client.update_named_param(name, param.data)
-            """
-            max_chunk_size = 500 * 1024 * 1024  # 400 MB
+
+            # discard this slow synchronization
+            #for name, param in self.model.named_parameters():
+            #    with gather_if_zero3([param]):
+            #        if self.vllm_client is not None:
+            #            self.vllm_client.update_named_param(name, param.data)
+
+            max_chunk_size = 100 * 1024 * 1024  # 100 MB
             param_chunk = []
             current_chunk_size = 0                        
             debug_file = "debug_%s.txt" % self.accelerator.process_index
 
-            for name, param in self.model.named_parameters():
-                with gather_if_zero3([param]):
-                    if self.vllm_client is not None:
-                        # Calculate the size of this parameter in bytes
-                        param_size = param.numel() * param.element_size()
+            if is_fsdp_used:
+                with FSDP.summon_full_params(self.model, recurse=True, writeback=False):
+                    for name, param in self.model.named_parameters():
+                        if param.data is None:
+                            continue
+                        if self.vllm_client is not None:
+                            # Calculate the size of this parameter in bytes
+                            param_size = param.numel() * param.element_size()
 
-                        param_chunk.append((name, param.data))
-                        current_chunk_size += param_size
-            
-                        # When the accumulated chunk reaches or exceeds 100MB, update the model parameters in one chunk.
-                        if current_chunk_size >= max_chunk_size:
-                            if os.path.exists(debug_file):
-                                with open(debug_file, 'a') as fout:
-                                    names = [(p[0], p[1].shape) for p in param_chunk]
-                                    cmd = f"rank={self.accelerator.process_index}, send params={names}\n"
-                                    fout.write(cmd)
-                            self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
-                            # Reset for the next chunk
-                            param_chunk = []
-                            current_chunk_size = 0
+                            param_chunk.append((name, param.data))
+                            current_chunk_size += param_size
+                
+                            # When the accumulated chunk reaches or exceeds 100MB, update the model parameters in one chunk.
+                            if current_chunk_size >= max_chunk_size:
+                                if os.path.exists(debug_file):
+                                    with open(debug_file, 'a') as fout:
+                                        names = [(p[0], p[1].shape) for p in param_chunk]
+                                        cmd = f"FSDP --- rank={self.accelerator.process_index}, send params={names}\n"
+                                        fout.write(cmd)
+                                self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
+                                # Reset for the next chunk
+                                param_chunk = []
+                                current_chunk_size = 0
+            else:
+                for name, param in self.model.named_parameters():
+                    with gather_if_zero3([param]): # gather if zero3 used
+                        if self.vllm_client is not None:
+                            # Calculate the size of this parameter in bytes
+                            param_size = param.numel() * param.element_size()
+
+                            param_chunk.append((name, param.data))
+                            current_chunk_size += param_size
+                
+                            # When the accumulated chunk reaches or exceeds 100MB, update the model parameters in one chunk.
+                            if current_chunk_size >= max_chunk_size:
+                                if os.path.exists(debug_file):
+                                    with open(debug_file, 'a') as fout:
+                                        names = [(p[0], p[1].shape) for p in param_chunk]
+                                        cmd = f"rank={self.accelerator.process_index}, send params={names}\n"
+                                        fout.write(cmd)
+                                self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
+                                # Reset for the next chunk
+                                param_chunk = []
+                                current_chunk_size = 0
             
             # If any parameters remain that didn't reach the 100MB threshold, update them as well.
             if param_chunk and self.vllm_client is not None:
