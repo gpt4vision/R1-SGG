@@ -722,14 +722,11 @@ class GRPOTrainerV2(Trainer):
             current_chunk_size = 0                        
             debug_file = "debug_%s.txt" % self.accelerator.process_index
 
-            visual_part = 0
             for name, param in self.model.named_parameters():
                 with gather_if_zero3([param]):
                     if self.vllm_client is not None:
                         # Calculate the size of this parameter in bytes
                         param_size = param.numel() * param.element_size()
-                        if 'visual' in name:
-                            visual_part += param_size
 
                         param_chunk.append((name, param.data))
                         current_chunk_size += param_size
@@ -755,7 +752,6 @@ class GRPOTrainerV2(Trainer):
                         fout.write(cmd)
                 self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
 
-        print("visual part size:", visual_part >> 20, "MB")
 
         # Reset cache on main process
         if self.vllm_client is not None:
