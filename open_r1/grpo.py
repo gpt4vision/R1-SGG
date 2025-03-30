@@ -92,6 +92,8 @@ def extract_answer_content(text: str) -> str:
     match = re.search(r"<answer>(.*)", text, re.DOTALL)
     return match.group(1).strip() if match else text
 
+def refine_node_edge(obj):
+    return obj.replace("_", " ").replace("-", " ").lower()
 
 
 @lru_cache(maxsize=4096)
@@ -219,22 +221,24 @@ def node_acc_reward(completions, solution, **kwargs):
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
+    image_id = getattr(kwargs, "image_id", -1)
+
     for content, sol in zip(contents, solution):
         reward = 0.0
         match_objects = []
         try:
             gt_objs = sol['objects']
-            # gt_rels is not used here but kept for consistency with edge_reward
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
             _objs = []
             for obj in pred_objs:
                 obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
 
 
-            assignments = bi_match(gt_objs, pred_objs, SEM_WEIGHT, IOU_WEIGHT)
+            assignments = bi_match(gt_objs, pred_objs)
             for assign in assignments:
                 gt_id = assign['groundtruth']['id']
                 pred_entry = assign['prediction']
@@ -255,7 +259,7 @@ def node_acc_reward(completions, solution, **kwargs):
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Node-level Acc. Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
-                f.write(f"solution: {sol}\n")
+                f.write(f"image_id: {image_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
@@ -265,18 +269,19 @@ def node_box_reward(completions, solution, **kwargs):
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+    image_id = getattr(kwargs, "image_id", -1)
 
     for content, sol in zip(contents, solution):
         reward = 0.0
         match_objects = []
         try:
             gt_objs = sol['objects']
-            # gt_rels is not used here but kept for consistency with edge_reward
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
             _objs = []
             for obj in pred_objs:
                 obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
 
@@ -302,7 +307,7 @@ def node_box_reward(completions, solution, **kwargs):
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Node-level IoU Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
-                f.write(f"solution: {sol}\n")
+                f.write(f"image_id: {image_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
@@ -312,6 +317,7 @@ def edge_reward(completions, solution, **kwargs):
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+    image_id = getattr(kwargs, "image_id", -1)
 
     for content, sol in zip(contents, solution):
         reward = 0.0
@@ -326,6 +332,7 @@ def edge_reward(completions, solution, **kwargs):
             _objs = []
             for obj in pred_objs:
                 obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
 
@@ -342,10 +349,13 @@ def edge_reward(completions, solution, **kwargs):
                 )
                 map_obj[gt_id] = pred_id
 
-            pred_triplets = { (rel['subject'], rel['object']): rel['predicate'] for rel in pred_rels }
+            pred_triplets = { (refine_node_edge(rel['subject']), \ 
+                               refine_node_edge(rel['object'])): \
+                               refine_node_edge(rel['predicate']) for rel in pred_rels }
+
             for gt_rel in gt_rels:
                 sub, obj = gt_rel['subject'], gt_rel['object']
-                if sub not in map_obj or obj not in map_obj:
+                if (sub not in map_obj) or (obj not in map_obj):
                     continue
                 sub_mapped = map_obj[sub]
                 obj_mapped = map_obj[obj]
@@ -365,7 +375,7 @@ def edge_reward(completions, solution, **kwargs):
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Edge-level Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
-                f.write(f"solution: {sol}\n")
+                f.write(f"image_id: {image_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
                 if match_triplets:
@@ -382,6 +392,8 @@ def format_reward(completions, **kwargs):
     pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+    image_id = getattr(kwargs, "image_id", -1)
+
     for completion in completions:
         content = completion[0]["content"]
         match = re.fullmatch(pattern, content, re.DOTALL)
@@ -411,7 +423,7 @@ def format_reward(completions, **kwargs):
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Format Reward {reward:.3f} -------------\n")
-                f.write(f"content: {content}\n")
+                f.write(f"image_id:{image_id}, content: {content}\n")
 
     return rewards
 
@@ -512,7 +524,9 @@ def main(script_args, training_args, model_args):
                 scene_graph = {"objects": gt_objs, "relationships": gt_rels}
                 batch.append({"prompt": prompt, 
                               "image": image, 
-                              "solution": scene_graph})
+                              "solution": scene_graph,
+                              "image_id": example['image_id'],
+                              })
 
             return batch
 

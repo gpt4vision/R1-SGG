@@ -3,8 +3,8 @@
 #SBATCH --job-name=VLLM
 #SBATCH --time=24:00:00
 
-#SBATCH --nodes=1
-#SBATCH --ntasks=2
+#SBATCH --nodes=8
+#SBATCH --ntasks=16
 #SBATCH --ntasks-per-node=2
 #SBATCH --gpus-per-node=rtx_4090:8
 #SBATCH --cpus-per-task=4
@@ -30,7 +30,7 @@ echo "DP_WORLD_SIZE : ${DP_WORLD_SIZE}"
 echo "Node list: ${nodes[@]}"
 
 # ------------------ Export IPs and Ports ------------------
-IP_FILE=ip_port_test.txt
+IP_FILE=ip_port_list.txt
 
 > ${IP_FILE}  # Reset output list
 
@@ -64,7 +64,7 @@ for node in "${nodes[@]}"; do
 
                 echo \"Starting rank \$RANK on $node with CUDA_VISIBLE_DEVICES=\$CUDA_VISIBLE_DEVICES, port \$PORT\"
 
-                python vllm_server_v2.py \
+                python src/vllm_server_v2.py \
                     --model '${MODEL_PATH}' \
                     --gpu_memory_utilization 0.85 \
                     --dtype 'bfloat16' \

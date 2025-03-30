@@ -15,6 +15,7 @@ fsdp_config:
   fsdp_sync_module_states: true
   fsdp_transformer_layer_cls_to_wrap: null
   fsdp_use_orig_params: true
+
 main_training_function: main
 mixed_precision: bf16
 rdzv_backend: static

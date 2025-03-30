@@ -59,8 +59,10 @@ TRAIN_NODES=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 
 # Choose the first training node as the rendezvous head node
 HEAD_NODE=${TRAIN_NODES[0]}
-HEAD_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
-echo "Head Node IP: $HEAD_NODE_IP"
+MASTER_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
+
+MASTER_PORT=$(shuf -i 20000-40000 -n 1)
+echo "Head Node IP: $MASTER_IP, port: ${MASTER_PORT}"
 
 # Create a comma-separated list of training nodes for srun
 TRAIN_NODES_LIST=$(IFS=, ; echo "${TRAIN_NODES[*]}")
@@ -79,14 +81,16 @@ export NODE_RANK=${SLURM_NODEID}  # Provided by SLURM
 
 MAX_PIXELS=$((512 * 28 * 28))
 
+
 # Launch distributed training on the training nodes using 8 GPUs per node
 srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
-    accelerate launch \
-    --main_process_ip ${HEAD_NODE_IP} \
-    --main_process_port 29500 \
+    accelerate launch --multi_gpu\
+    --config_file local_scripts/fsdp.yaml\
+    --num_processes 128 \
+    --main_process_ip ${MASTER_IP} \
+    --main_process_port ${MASTER_PORT} \
     --num_machines ${NUM_TRAIN_NODES} \
     --machine_rank ${SLURM_NODEID} \    
-    --config_file local_scripts/fsdp.yaml \
     open_r1/grpo.py \
     --output_dir models/qwen2vl-fsdp-g8 \
     --model_name_or_path ${MODEL_PATH} \
