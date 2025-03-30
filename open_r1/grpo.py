@@ -46,8 +46,9 @@ except OSError:
     download("en_core_web_md")
     nlp = spacy.load("en_core_web_md")
 
-SEM_WEIGHT = 0.5
-IOU_WEIGHT = 0.5
+SEM_WEIGHT = 1.0
+IOU_WEIGHT = 1.0
+BOX_L1_WEIGHT = 1.0
 
 
 @dataclass
@@ -118,17 +119,76 @@ def compute_iou(boxA, boxB):
     unionArea = boxAArea + boxBArea - interArea
     return 0.0 if unionArea == 0 else interArea / unionArea
 
+def compute_giou(boxA, boxB):
+    """
+    Calculate the Generalized Intersection over Union (GIoU) of two bounding boxes.
+
+    Parameters:
+      boxA: list or tuple of [x1, y1, x2, y2]
+      boxB: list or tuple of [x1, y1, x2, y2]
+
+    Returns:
+      giou: float, the Generalized IoU between boxA and boxB.
+    """
+
+    # Calculate the (x, y)-coordinates of the intersection rectangle.
+    inter_x1 = max(boxA[0], boxB[0])
+    inter_y1 = max(boxA[1], boxB[1])
+    inter_x2 = min(boxA[2], boxB[2])
+    inter_y2 = min(boxA[3], boxB[3])
+
+    # Compute the width and height of the intersection rectangle.
+    inter_width = max(0, inter_x2 - inter_x1)
+    inter_height = max(0, inter_y2 - inter_y1)
+
+    # Compute the area of intersection rectangle.
+    intersection = inter_width * inter_height
+
+    # Compute the area of both bounding boxes.
+    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+
+    # Compute the union area.
+    union = areaA + areaB - intersection
+    # Ensure no division by zero.
+    if union == 0:
+        return 0.0
+
+    # Compute the standard Intersection over Union (IoU).
+    iou = intersection / union
+
+    # Find the smallest (axis-aligned) box that encloses both boxes.
+    c_x1 = min(boxA[0], boxB[0])
+    c_y1 = min(boxA[1], boxB[1])
+    c_x2 = max(boxA[2], boxB[2])
+    c_y2 = max(boxA[3], boxB[3])
+    areaC = (c_x2 - c_x1) * (c_y2 - c_y1)
+
+    # Calculate the Generalized IoU.
+    giou_value = iou - (areaC - union) / areaC
+
+    return giou_value
+
+def box_L1(boxA, boxB):
+    # Calculate the sum of absolute differences between the coordinates
+    l1_distance = sum(abs(a - b) for a, b in zip(boxA, boxB))
+    return l1_distance    
 
 
+def normalize_box(box, scale=1000.):
+    """ for qwen2vl, its output should be [0, 1000]"""
+    return [e / scale for e in box]
 
-def cost_function(pred, gt, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT):
+
+def cost_function(pred, gt, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
     assert len(pred['bbox']) == 4, f"Invalid bbox length: {len(pred['bbox'])}"
+
     iou = compute_iou(pred['bbox'], gt['bbox'])
     sem_sim = category_semantic_similarity(pred['id'], gt['id'])
-    return sem_weight * (1.0 - sem_sim) + iou_weight * (1.0 - iou)
+    return sem_weight * (1.0 - sem_sim) + iou_weight * (1.0 - iou) + box_l1_weight * box_L1(pred['bbox'], gt['bbox'])
 
 
-def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT):
+def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
     num_gt = len(groundtruths)
     num_pred = len(predictions)
     pad = max(0, num_gt - num_pred)
@@ -136,9 +196,9 @@ def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WE
 
     for i, pred in enumerate(predictions):
         for j, gt in enumerate(groundtruths):
-            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight)
+            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight, box_l1_weight)
     if pad > 0:
-        cost_matrix[num_pred:, :] = 10000  # High cost for padded rows
+        cost_matrix[num_pred:, :] = 100000  # High cost for padded rows
 
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
     assignments = []
@@ -167,6 +227,12 @@ def node_acc_reward(completions, solution, **kwargs):
             # gt_rels is not used here but kept for consistency with edge_reward
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                _objs.append(obj)
+            pred_objs = _objs
+
 
             assignments = bi_match(gt_objs, pred_objs, SEM_WEIGHT, IOU_WEIGHT)
             for assign in assignments:
@@ -178,8 +244,6 @@ def node_acc_reward(completions, solution, **kwargs):
                 match_objects.append(
                     f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                 )
-                #reward += (SEM_WEIGHT * category_semantic_similarity(gt_id, pred_id) +
-                #           IOU_WEIGHT * compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']))
                 reward +=  category_semantic_similarity(gt_id, pred_id)
 
             reward /= len(gt_objs) if gt_objs else 1
@@ -196,7 +260,7 @@ def node_acc_reward(completions, solution, **kwargs):
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def node_iou_reward(completions, solution, **kwargs):
+def node_box_reward(completions, solution, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
@@ -210,8 +274,13 @@ def node_iou_reward(completions, solution, **kwargs):
             # gt_rels is not used here but kept for consistency with edge_reward
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                _objs.append(obj)
+            pred_objs = _objs
 
-            assignments = bi_match(gt_objs, pred_objs, SEM_WEIGHT, IOU_WEIGHT)
+            assignments = bi_match(gt_objs, pred_objs)
             for assign in assignments:
                 gt_id = assign['groundtruth']['id']
                 pred_entry = assign['prediction']
@@ -221,9 +290,8 @@ def node_iou_reward(completions, solution, **kwargs):
                 match_objects.append(
                     f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                 )
-                #reward += (SEM_WEIGHT * category_semantic_similarity(gt_id, pred_id) +
-                #           IOU_WEIGHT * compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']))
-                reward += compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox'])
+                reward += compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']) * 0.5 + \
+                          np.exp(-box_L1(assign['groundtruth']['bbox'], pred_entry['bbox'])) * 0.5
 
             reward /= len(gt_objs) if gt_objs else 1
         except Exception:
@@ -255,8 +323,13 @@ def edge_reward(completions, solution, **kwargs):
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
             pred_rels = preds['relationships']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                _objs.append(obj)
+            pred_objs = _objs
 
-            assignments = bi_match(gt_objs, pred_objs, SEM_WEIGHT, IOU_WEIGHT)
+            assignments = bi_match(gt_objs, pred_objs)
             map_obj = {}
             for assign in assignments:
                 gt_id = assign['groundtruth']['id']
@@ -347,7 +420,7 @@ def format_reward(completions, **kwargs):
 reward_funcs_registry = {
     "format": format_reward,
     "node_acc_reward": node_acc_reward,
-    "node_iou_reward": node_iou_reward,
+    "node_box_reward": node_box_reward,
     "edge_reward": edge_reward,
     # "diversity_reward": diversity_reward
 }
@@ -384,7 +457,7 @@ def scale_box(box, scale):
 
 
 def main(script_args, training_args, model_args):
-    script_args.reward_funcs = ['format', 'node_acc_reward', "node_iou_reward",  "edge_reward"]
+    script_args.reward_funcs = ['format', 'node_acc_reward', "node_box_reward",  "edge_reward"]
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
@@ -429,7 +502,10 @@ def main(script_args, training_args, model_args):
 
                 new_objs = []
                 for obj in gt_objs:
-                    obj['bbox'] = scale_box(obj['bbox'], box_scale)
+                    bbox = scale_box(obj['bbox'], box_scale)
+                    # normalize box
+                    obj['bbox'] = [bbox[0] / new_iw, bbox[1] / new_ih, bbox[2] / new_iw, bbox[3] / new_ih]
+
                     new_objs.append(obj)
                 gt_objs = new_objs
 

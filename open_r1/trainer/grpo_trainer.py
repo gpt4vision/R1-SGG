@@ -711,11 +711,51 @@ class GRPOTrainerV2(Trainer):
                 # Parameters will automatically be repartitioned when exiting the context
         else:
             # For non-PEFT models, simply gather and update each parameter individually.
+            """
             for name, param in self.model.named_parameters():
                 with gather_if_zero3([param]):
                     if self.vllm_client is not None:
                         self.vllm_client.update_named_param(name, param.data)
-                        
+            """
+            max_chunk_size = 500 * 1024 * 1024  # 400 MB
+            param_chunk = []
+            current_chunk_size = 0                        
+            debug_file = "debug_%s.txt" % self.accelerator.process_index
+
+            visual_part = 0
+            for name, param in self.model.named_parameters():
+                with gather_if_zero3([param]):
+                    if self.vllm_client is not None:
+                        # Calculate the size of this parameter in bytes
+                        param_size = param.numel() * param.element_size()
+                        if 'visual' in name:
+                            visual_part += param_size
+
+                        param_chunk.append((name, param.data))
+                        current_chunk_size += param_size
+            
+                        # When the accumulated chunk reaches or exceeds 100MB, update the model parameters in one chunk.
+                        if current_chunk_size >= max_chunk_size:
+                            if os.path.exists(debug_file):
+                                with open(debug_file, 'a') as fout:
+                                    names = [(p[0], p[1].shape) for p in param_chunk]
+                                    cmd = f"rank={self.accelerator.process_index}, send params={names}\n"
+                                    fout.write(cmd)
+                            self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
+                            # Reset for the next chunk
+                            param_chunk = []
+                            current_chunk_size = 0
+            
+            # If any parameters remain that didn't reach the 100MB threshold, update them as well.
+            if param_chunk and self.vllm_client is not None:
+                if os.path.exists(debug_file):
+                    with open(debug_file, 'a') as fout:
+                        names = [(p[0], p[1].shape) for p in param_chunk]
+                        cmd = f"rank={self.accelerator.process_index}, send params={names}\n"
+                        fout.write(cmd)
+                self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
+
+        print("visual part size:", visual_part >> 20, "MB")
 
         # Reset cache on main process
         if self.vllm_client is not None:
