@@ -63,7 +63,7 @@ TRAIN_NODES=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 HEAD_NODE=${TRAIN_NODES[0]}
 MASTER_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
 
-MASTER_PORT=$(shuf -i 20000-40000 -n 1)
+MASTER_PORT=6000
 echo "Head Node IP: $MASTER_IP, port: ${MASTER_PORT}"
 
 # Create a comma-separated list of training nodes for srun
@@ -82,20 +82,32 @@ export WANDB_PROJECT=RL4SGG
 export DATA_PATH="JosephZ/vg150_train_sgg_prompt"
 export MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 
-export NODE_RANK=${SLURM_NODEID}  # Provided by SLURM
+
+# Training setup
+NNODES=$SLURM_NNODES
+NODE_RANK=$SLURM_PROCID
+WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 
 MAX_PIXELS=$((512 * 28 * 28))
 
+echo "Start training script..."
 
-# Launch distributed training on the training nodes using 8 GPUs per node
-srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
-    accelerate launch --multi_gpu\
+LAUNCHER="accelerate launch \
+    --multi_gpu \
+    --num_machines $NNODES \
+    --num_processes $WORLD_SIZE \
+    --main_process_ip "$MASTER_IP" \
+    --main_process_port $MASTER_PORT \
+    --num_processes $WORLD_SIZE \
+    --machine_rank \$SLURM_PROCID \
+    --role $SLURMD_NODENAME: \
+    --rdzv_conf rdzv_backend=c10d \
+    --max_restarts 0 \
+    --tee 3 \
     --config_file local_scripts/fsdp.yaml \
-    --num_processes 128 \
-    --main_process_ip ${MASTER_IP}\
-    --main_process_port ${MASTER_PORT}\
-    --num_machines ${NUM_TRAIN_NODES}\
-    --machine_rank ${NODE_RANK} \
+"
+
+CMD=" \
     open_r1/grpo.py \
     --output_dir models/qwen2vl-fsdp-g8 \
     --model_name_or_path ${MODEL_PATH} \
@@ -120,3 +132,15 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --run_name Qwen2VL-7B-GRPO-fsdp-G8 \
     --save_steps 100 \
     --num_generations 8
+"
+
+SRUN_ARGS=" \
+    --wait=60 \
+    --kill-on-bad-exit=1 \
+    "
+
+clear; srun $SRUN_ARGS --jobid $SLURM_JOB_ID bash -c "$LAUNCHER $CMD"
+
+echo "END TIME: $(date)"
+
+

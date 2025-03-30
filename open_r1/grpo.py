@@ -472,6 +472,10 @@ def main(script_args, training_args, model_args):
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
+    num_rels = [(idx, len(json.loads(e['relationships'])) ) for idx, e in enumerate(dataset)]
+    num_rels = sorted(num_rels, key=lambda x: x[1])
+    ids = [e[0] for e in num_rels]
+    dataset = dataset.select(ids)
     print("len(dataset):", len(dataset))
 
     def replace_answer_format(item: str) -> str:
