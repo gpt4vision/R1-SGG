@@ -349,8 +349,7 @@ def edge_reward(completions, solution, **kwargs):
                 )
                 map_obj[gt_id] = pred_id
 
-            pred_triplets = { (refine_node_edge(rel['subject']), \ 
-                               refine_node_edge(rel['object'])): \
+            pred_triplets = { (refine_node_edge(rel['subject']), refine_node_edge(rel['object'])): \
                                refine_node_edge(rel['predicate']) for rel in pred_rels }
 
             for gt_rel in gt_rels:

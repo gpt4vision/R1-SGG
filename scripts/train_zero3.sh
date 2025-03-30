@@ -62,6 +62,9 @@ HEAD_NODE=${TRAIN_NODES[0]}
 HEAD_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
 echo "Head Node IP: $HEAD_NODE_IP"
 
+echo "environment: $(env | grep NCCL)"
+
+
 # Create a comma-separated list of training nodes for srun
 TRAIN_NODES_LIST=$(IFS=, ; echo "${TRAIN_NODES[*]}")
 

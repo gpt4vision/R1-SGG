@@ -16,6 +16,8 @@
 
 # force crashing on nccl issues like hanging broadcast
 export NCCL_ASYNC_ERROR_HANDLING=1
+#export NCCL_IB_DISABLE=1
+
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG_SUBSYS=COLL
 # export NCCL_SOCKET_NTHREADS=1
@@ -67,6 +69,9 @@ echo "Head Node IP: $MASTER_IP, port: ${MASTER_PORT}"
 # Create a comma-separated list of training nodes for srun
 TRAIN_NODES_LIST=$(IFS=, ; echo "${TRAIN_NODES[*]}")
 
+export NCCL_DEBUG=INFO
+echo "environment: $(env | grep NCCL)"
+
 # Define HOST and PORT for the vLLM server
 PORT_A=8888
 
@@ -85,12 +90,12 @@ MAX_PIXELS=$((512 * 28 * 28))
 # Launch distributed training on the training nodes using 8 GPUs per node
 srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     accelerate launch --multi_gpu\
-    --config_file local_scripts/fsdp.yaml\
+    --config_file local_scripts/fsdp.yaml \
     --num_processes 128 \
-    --main_process_ip ${MASTER_IP} \
-    --main_process_port ${MASTER_PORT} \
-    --num_machines ${NUM_TRAIN_NODES} \
-    --machine_rank ${SLURM_NODEID} \    
+    --main_process_ip ${MASTER_IP}\
+    --main_process_port ${MASTER_PORT}\
+    --num_machines ${NUM_TRAIN_NODES}\
+    --machine_rank ${NODE_RANK} \
     open_r1/grpo.py \
     --output_dir models/qwen2vl-fsdp-g8 \
     --model_name_or_path ${MODEL_PATH} \
