@@ -80,17 +80,10 @@ class VLLMClient:
         self.sessions = self.loop.run_until_complete(self._create_sessions(hosts))
         self.connection_timeout = connection_timeout
 
-        valid_hosts = []
-        valid_ports = []
-        for host, port in zip(hosts, server_ports):
-            status = self.check_server(host, port, connection_timeout, 10)
-            if status:
-                valid_hosts.append(host)
-                valid_ports.append(port)
-
-        self.hosts = valid_hosts
-        self.server_ports = valid_ports
         self.client_rank = client_rank  # build a client <-> server mapping. If we have 8 servers, we should create 8 clients.
+        status = self.check_server(self.hosts[self.client_rank], self.server_ports[self.client_rank], connection_timeout, 60.0)
+        assert status, f"Failed to connect {self.hosts[self.client_rank]}: {self.server_ports[self.client_rank]}"
+
         self.loop.run_until_complete(self.init_communicator())
         atexit.register(self.cleanup)
 
@@ -112,7 +105,7 @@ class VLLMClient:
             sessions.append(aiohttp.ClientSession())
         return sessions        
 
-    def check_server(self, host, port, total_timeout: float = 0.0, retry_interval: float = 2.0):
+    def check_server(self, host, port, total_timeout: float = 0.0, retry_interval: float = 60.0):
         """
         Check server availability with retries on failure, within a total timeout duration. If the server is not up
         after the total timeout duration, raise a `ConnectionError`.

@@ -533,7 +533,7 @@ class GRPOTrainerV2(Trainer):
                     connection_timeout=args.vllm_server_timeout,
                     client_rank = client_id
                 )
-                print(f"Rank={rank} create a VLLMClient instance with client_rank={client_rank}!")
+                print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!")
             else:
                 self.vllm_client = None
 
