@@ -186,7 +186,7 @@ def normalize_box(box, scale=1000.):
 def cost_function(pred, gt, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
     assert len(pred['bbox']) == 4, f"Invalid bbox length: {len(pred['bbox'])}"
 
-    iou = compute_iou(pred['bbox'], gt['bbox'])
+    iou = compute_giou(pred['bbox'], gt['bbox']) # use giou
     sem_sim = category_semantic_similarity(pred['id'], gt['id'])
     return sem_weight * (1.0 - sem_sim) + iou_weight * (1.0 - iou) + box_l1_weight * box_L1(pred['bbox'], gt['bbox'])
 
@@ -216,15 +216,13 @@ def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WE
     return assignments
 
 
-def node_acc_reward(completions, solution, **kwargs):
+def node_acc_reward(completions, solution, image_id, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    image_id = getattr(kwargs, "image_id", -1)
-
-    for content, sol in zip(contents, solution):
+    for content, sol, im_id in zip(contents, solution, image_id):
         reward = 0.0
         match_objects = []
         try:
@@ -260,19 +258,18 @@ def node_acc_reward(completions, solution, **kwargs):
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Node-level Acc. Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
-                f.write(f"image_id: {image_id}, solution: {sol}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def node_box_reward(completions, solution, **kwargs):
+def node_box_reward(completions, solution, image_id, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    image_id = getattr(kwargs, "image_id", -1)
 
-    for content, sol in zip(contents, solution):
+    for content, sol, im_id in zip(contents, solution, image_id):
         reward = 0.0
         match_objects = []
         try:
@@ -308,19 +305,18 @@ def node_box_reward(completions, solution, **kwargs):
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Node-level IoU Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
-                f.write(f"image_id: {image_id}, solution: {sol}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def edge_reward(completions, solution, **kwargs):
+def edge_reward(completions, solution, image_id,  **kwargs):
     """Compute edge-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    image_id = getattr(kwargs, "image_id", -1)
 
-    for content, sol in zip(contents, solution):
+    for content, sol, im_id in zip(contents, solution, image_id):
         reward = 0.0
         match_objects = []
         match_triplets = []
@@ -375,7 +371,7 @@ def edge_reward(completions, solution, **kwargs):
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Edge-level Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
-                f.write(f"image_id: {image_id}, solution: {sol}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
                 if match_triplets:
@@ -383,7 +379,7 @@ def edge_reward(completions, solution, **kwargs):
     return rewards
 
 
-def format_reward(completions, **kwargs):
+def format_reward(completions, image_id, **kwargs):
     """
     Reward function that checks if the completion has the correct format:
     - Must contain <think>...</think> and <answer>...</answer>
@@ -392,9 +388,8 @@ def format_reward(completions, **kwargs):
     pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    image_id = getattr(kwargs, "image_id", -1)
 
-    for completion in completions:
+    for completion, im_id in zip(completions, image_id):
         content = completion[0]["content"]
         match = re.fullmatch(pattern, content, re.DOTALL)
         reward = 0.0
@@ -423,7 +418,7 @@ def format_reward(completions, **kwargs):
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
                 f.write(f"------------- {current_time} Format Reward {reward:.3f} -------------\n")
-                f.write(f"image_id:{image_id}, content: {content}\n")
+                f.write(f"image_id:{im_id}, content: {content}\n")
 
     return rewards
 

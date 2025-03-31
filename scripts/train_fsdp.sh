@@ -72,8 +72,6 @@ TRAIN_NODES_LIST=$(IFS=, ; echo "${TRAIN_NODES[*]}")
 export NCCL_DEBUG=INFO
 echo "environment: $(env | grep NCCL)"
 
-# Define HOST and PORT for the vLLM server
-PORT_A=8888
 
 
 export DEBUG_MODE=True
@@ -134,13 +132,7 @@ CMD=" \
     --num_generations 8
 "
 
-SRUN_ARGS=" \
-    --wait=60 \
-    --kill-on-bad-exit=1 \
-    "
 
-clear; srun $SRUN_ARGS --jobid $SLURM_JOB_ID bash -c "$LAUNCHER $CMD"
+srun --jobid $SLURM_JOB_ID bash -c "$LAUNCHER $CMD"
 
 echo "END TIME: $(date)"
-
-

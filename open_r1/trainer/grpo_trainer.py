@@ -533,6 +533,7 @@ class GRPOTrainerV2(Trainer):
                     connection_timeout=args.vllm_server_timeout,
                     client_rank = client_id
                 )
+                print(f"Rank={rank} create a VLLMClient instance with client_rank={client_rank}!")
             else:
                 self.vllm_client = None
 
@@ -827,33 +828,35 @@ class GRPOTrainerV2(Trainer):
                 example={"prompt": messages, "image": image}
             """
             if self.use_vllm: # prepare data for vLLM servers
-                for example in inputs:
-                    assert is_pil_image(example['image']), "image is not PIL.Image!"
+                with profiling_context(self, "llm_inputs_prepare"):
+                    for example in inputs:
+                        assert is_pil_image(example['image']), "image is not PIL.Image!"
 
-                    prompt_item = example['prompt']
-                    base64_image = encode_image_to_base64(example['image'])
-                    new_image = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    for idx, item in enumerate(prompt_item):
-                        if item['role'] == 'user':
-                            assert item['content'][0]['type'] == 'image', "user's content[0] != {type: image}"
-                            item['content'][0] = new_image
-                            prompt_item[idx] = item 
+                        prompt_item = example['prompt']
+                        base64_image = encode_image_to_base64(example['image'])
+                        new_image = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        for idx, item in enumerate(prompt_item):
+                            if item['role'] == 'user':
+                                assert item['content'][0]['type'] == 'image', "user's content[0] != {type: image}"
+                                item['content'][0] = new_image
+                                prompt_item[idx] = item 
 
-                    llm_inputs.append(json.dumps(prompt_item))
+                        llm_inputs.append(json.dumps(prompt_item))
 
-            prompts = [x["prompt"] for x in inputs]
-            prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-            images = [x["image"] for x in inputs]
-            prompt_inputs = self.processing_class(
-                text=prompts_text, images=images, 
-                return_tensors="pt", padding=True,
-                padding_side="left", add_special_tokens=False,
-            )
-            prompt_inputs = super()._prepare_inputs(prompt_inputs)
+            with profiling_context(self, "processor_prepare"):
+                prompts = [x["prompt"] for x in inputs]
+                prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+                images = [x["image"] for x in inputs]
+                prompt_inputs = self.processing_class(
+                    text=prompts_text, images=images, 
+                    return_tensors="pt", padding=True,
+                    padding_side="left", add_special_tokens=False,
+                )
+                prompt_inputs = super()._prepare_inputs(prompt_inputs)
 
-            prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-            pixel_values = prompt_inputs["pixel_values"]
-            image_grid_thw = prompt_inputs["image_grid_thw"]            
+                prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+                pixel_values = prompt_inputs["pixel_values"]
+                image_grid_thw = prompt_inputs["image_grid_thw"]            
         else:
             """
                 example = {"prompt": [{"role": "user", "content": "What color is the sky?"}]}
