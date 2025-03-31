@@ -112,7 +112,8 @@ for i in "${!NODELIST[@]}"; do
                 --run_name ${RUN_NAME} \
                 --save_steps 100 \
                 --num_generations 8 \
-		--num_iterations 4
+		--num_iterations 4 \
+		--beta 0.0 
         ) &
 
         wait
