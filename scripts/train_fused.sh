@@ -69,6 +69,7 @@ for i in "${!NODELIST[@]}"; do
             python src/vllm_server_v2.py \
                 --model '${MODEL_PATH}' \
                 --gpu_memory_utilization 0.85 \
+                --enable-prefix-caching true \
                 --dtype 'bfloat16' \
                 --max_model_len 4096 \
                 --tensor_parallel_size ${TP_SIZE} \

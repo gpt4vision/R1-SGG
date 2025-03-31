@@ -58,6 +58,7 @@ class VLLMClient:
         group_port: int = 51216, 
         client_rank: int = 0,
         connection_timeout: float = 60.0,
+        disable_weight_sync: bool = False
     ):
         if not is_requests_available():
             raise ImportError("requests is not installed. Please install it with `pip install requests`.")
@@ -69,6 +70,7 @@ class VLLMClient:
         if isinstance(server_ports, str):
             server_ports = [e.strip() for e in server_ports.split(',')]
 
+        self.hosts = hosts
         self.server_ports = server_ports
         self.group_port = group_port
 
@@ -84,8 +86,10 @@ class VLLMClient:
         status = self.check_server(self.hosts[self.client_rank], self.server_ports[self.client_rank], connection_timeout, 60.0)
         assert status, f"Failed to connect {self.hosts[self.client_rank]}: {self.server_ports[self.client_rank]}"
 
-        self.loop.run_until_complete(self.init_communicator())
-        atexit.register(self.cleanup)
+        self.disable_weight_sync = disable_weight_sync
+        if not disable_weight_sync:
+            self.loop.run_until_complete(self.init_communicator())
+            atexit.register(self.cleanup)
 
         print(f"VLLMClient connected to server hosts={self.hosts}, port={self.server_ports}")        
 
