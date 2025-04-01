@@ -896,8 +896,8 @@ class GRPOTrainerV2(Trainer):
             else:
                 all_prompts_text = gather_object(prompts_text)
 
+            ordered_set_of_prompts = [prompt for sublist in all_prompts_text for prompt in sublist]
             if self.accelerator.is_main_process:
-                ordered_set_of_prompts = [prompt for sublist in all_prompts_text for prompt in sublist]
                 with profiling_context(self, "vLLM.generate"):
                     completion_ids = self.vllm_client.loop.run_until_complete(self.vllm_client.chat(
                         prompts=ordered_set_of_prompts,
@@ -911,7 +911,7 @@ class GRPOTrainerV2(Trainer):
                         guided_decoding_regex=self.guided_decoding_regex,
                     ))
             else:
-                completion_ids = [None] * len(all_prompts_text) * self.num_generations
+                completion_ids = [None] * len(ordered_set_of_prompts) * self.num_generations
             # Broadcast the completions from the main process to all processes, ensuring each process receives its
             # corresponding slice.
             completion_ids = broadcast_object_list(completion_ids, from_process=0)
