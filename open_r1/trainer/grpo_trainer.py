@@ -881,7 +881,8 @@ class GRPOTrainerV2(Trainer):
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
-            # repeat prompt_ids, prompt_mask, etc., since we generate [num_generations] times for each prompt
+            # repeat prompts, prompt_ids, prompt_mask, etc., since we generate [num_generations] times for each prompt
+            prompts = [item for item in prompts for _ in range(self.num_generations)]
             prompt_ids = prompt_ids.repeat_interleave(self.num_generations, dim=0)
             prompt_mask = prompt_mask.repeat_interleave(self.num_generations, dim=0)
             if pixel_values:
@@ -890,7 +891,6 @@ class GRPOTrainerV2(Trainer):
                 image_grid_thw = image_grid_thw.repeat_interleave(self.num_generations, dim=0)
 
 
-            # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.is_qwen2vl:
                 all_prompts_text = gather_object(llm_inputs)
             else:
@@ -916,8 +916,8 @@ class GRPOTrainerV2(Trainer):
             # corresponding slice.
             completion_ids = broadcast_object_list(completion_ids, from_process=0)
             process_slice = slice(
-                self.accelerator.process_index * len(prompts) * self.num_generations,
-                (self.accelerator.process_index + 1) * len(prompts) * self.num_generations,
+                self.accelerator.process_index * len(prompts),
+                (self.accelerator.process_index + 1) * len(prompts),
             )
             completion_ids = completion_ids[process_slice]
 
@@ -953,7 +953,6 @@ class GRPOTrainerV2(Trainer):
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
-
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
         with torch.no_grad():
@@ -1017,7 +1016,11 @@ class GRPOTrainerV2(Trainer):
                 else:
                     # Repeat all input columns (but "prompt" and "completion") to match the number of generations
                     keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
-                    reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
+                    if self.use_vllm:
+                        reward_kwargs = {key: [example[key] for example in inputs for _ in range(self.num_generations)] for key in keys}
+                    else:
+                        reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
+
                     output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
                     # Convert None values to NaN
                     output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
@@ -1035,9 +1038,13 @@ class GRPOTrainerV2(Trainer):
                 "Please ensure that at least one reward function returns a valid reward."
             )
 
-        # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
-        # completions may be distributed across processes
-        rewards_per_func = gather(rewards_per_func)
+        if not self.use_vllm:
+            # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
+            # completions may be distributed across processes
+            rewards_per_func = gather(rewards_per_func) 
+        else:
+            # for use_vllm, rewards_per_func is already collected
+            pass
 
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
@@ -1053,12 +1060,13 @@ class GRPOTrainerV2(Trainer):
         if self.args.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
 
-        # Slice to keep only the local part of the data
-        process_slice = slice(
-            self.accelerator.process_index * len(prompts),
-            (self.accelerator.process_index + 1) * len(prompts),
-        )
-        advantages = advantages[process_slice]
+        if not self.use_vllm:
+            # Slice to keep only the local part of the data
+            process_slice = slice(
+                self.accelerator.process_index * len(prompts),
+                (self.accelerator.process_index + 1) * len(prompts),
+            )
+            advantages = advantages[process_slice]
 
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
@@ -1100,7 +1108,7 @@ class GRPOTrainerV2(Trainer):
 
                     # For logging
                     table = {
-                        "step": [str(self.state.global_step)] * len(rewards),
+                        "step": str(self.state.global_step),
                         "prompt": prompts_to_log,
                         "completion": completions_to_log,
                         "reward": rewards.tolist(),
