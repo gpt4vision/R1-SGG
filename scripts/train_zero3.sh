@@ -4,10 +4,10 @@
 
 #SBATCH --job-name=GRPO_train
 #SBATCH --time=24:00:00
-#SBATCH --nodes=16                   # 4 training nodes + 1 vLLM node = 5 nodes
-#SBATCH --ntasks=16                   # Total tasks equals total nodes
+#SBATCH --nodes=1                   # 4 training nodes + 1 vLLM node = 5 nodes
+#SBATCH --ntasks=1                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=rtx_4090:8
+#SBATCH --gpus-per-node=a100_80gb:8
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=25000M
 #SBATCH --output=RL_%j_%N.out
@@ -48,11 +48,11 @@ echo "SERVER_PORT=$SERVER_PORT"
 
 
 # Define node counts
-NUM_TRAIN_NODES=16
 GPUS_PER_NODE=8
 
 # Get the list of allocated nodes
 NODELIST=($(scontrol show hostnames $SLURM_JOB_NODELIST))
+NUM_TRAIN_NODES=${#NODELIST[@]}
 
 # Assign training nodes (first NUM_TRAIN_NODES nodes)
 TRAIN_NODES=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
@@ -90,7 +90,7 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --rdzv_backend c10d \
     --rdzv_endpoint ${HEAD_NODE_IP}:29500 \
     open_r1/grpo.py \
-    --output_dir models/qwen2vl-1k-g8 \
+    --output_dir models/qwen2vl-nokl-n1-g8 \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name $DATA_PATH \
     --deepspeed ./local_scripts/zero3.json \
@@ -111,6 +111,8 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --top_p 0.001 \
     --top_k 1 \
     --num_train_epochs 1 \
-    --run_name Qwen2VL-7B-GRPO-1k-G8 \
+    --run_name Qwen2VL-7B-GRPO-nokl-n1-G8 \
     --save_steps 100 \
-    --num_generations 8
+    --num_generations 8 \
+    --num_iterations 1 \
+    --beta 0.0

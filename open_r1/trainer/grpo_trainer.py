@@ -624,8 +624,8 @@ class GRPOTrainerV2(Trainer):
         )
         return RepeatRandomSampler(
             data_source=self.train_dataset,
-            mini_repeat_count=self.num_generations,
-            batch_size=effective_batch_size // self.num_generations,
+            mini_repeat_count=self.num_generations if not self.use_vllm else 1, # if use vllm, set mini_repeat_count to 1
+            batch_size=effective_batch_size // self.num_generations if not self.use_vllm else effective_batch_size,
             repeat_count=self.num_iterations,
             seed=self.args.seed,
         )
@@ -634,7 +634,7 @@ class GRPOTrainerV2(Trainer):
         # See _get_train_sampler for an explanation of the sampler.
         return RepeatRandomSampler(
             data_source=eval_dataset,
-            mini_repeat_count=self.num_generations,
+            mini_repeat_count=self.num_generations if not self.use_vllm else 1,
             seed=self.args.seed,
         )
 
@@ -870,8 +870,7 @@ class GRPOTrainerV2(Trainer):
             prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
             pixel_values, image_grid_thw = None, None
 
-        # truncate TODO: dangerous for qwen2vl
-        if self.max_prompt_length is not None:
+        if self.max_prompt_length is not None and (not self.is_qwen2vl): # for multimodal LLMs, it's dangerous to do truncation!
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
@@ -882,6 +881,15 @@ class GRPOTrainerV2(Trainer):
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
+            # repeat prompt_ids, prompt_mask, etc., since we generate [num_generations] times for each prompt
+            prompt_ids = prompt_ids.repeat_interleave(self.num_generations, dim=0)
+            prompt_mask = prompt_mask.repeat_interleave(self.num_generations, dim=0)
+            if pixel_values:
+                pixel_values = pixel_values.repeat_interleave(self.num_generations, dim=0)
+            if image_grid_thw:
+                image_grid_thw = image_grid_thw.repeat_interleave(self.num_generations, dim=0)
+
+
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.is_qwen2vl:
                 all_prompts_text = gather_object(llm_inputs)
@@ -889,10 +897,7 @@ class GRPOTrainerV2(Trainer):
                 all_prompts_text = gather_object(prompts_text)
 
             if self.accelerator.is_main_process:
-                # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
-                # num_generations outputs for each one. This is faster than generating outputs for each duplicate
-                # prompt individually.
-                ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+                ordered_set_of_prompts = [prompt for sublist in all_prompts_text for prompt in sublist]
                 with profiling_context(self, "vLLM.generate"):
                     completion_ids = self.vllm_client.loop.run_until_complete(self.vllm_client.chat(
                         prompts=ordered_set_of_prompts,
@@ -906,13 +911,13 @@ class GRPOTrainerV2(Trainer):
                         guided_decoding_regex=self.guided_decoding_regex,
                     ))
             else:
-                completion_ids = [None] * len(all_prompts_text)
+                completion_ids = [None] * len(all_prompts_text) * self.num_generations
             # Broadcast the completions from the main process to all processes, ensuring each process receives its
             # corresponding slice.
             completion_ids = broadcast_object_list(completion_ids, from_process=0)
             process_slice = slice(
-                self.accelerator.process_index * len(prompts),
-                (self.accelerator.process_index + 1) * len(prompts),
+                self.accelerator.process_index * len(prompts) * self.num_generations,
+                (self.accelerator.process_index + 1) * len(prompts) * self.num_generations,
             )
             completion_ids = completion_ids[process_slice]
 

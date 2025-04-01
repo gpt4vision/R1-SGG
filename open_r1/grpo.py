@@ -48,9 +48,12 @@ except OSError:
     nlp = spacy.load("en_core_web_md")
 
 SEM_WEIGHT = 1.0
-IOU_WEIGHT = 1.0
-BOX_L1_WEIGHT = 1.0
+IOU_WEIGHT = 2.0
+BOX_L1_WEIGHT = 5.0
 
+
+NODE_REWARD_WEIGHT = 2.0
+EDGE_REWARD_WEIGHT = 5.0
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -247,7 +250,7 @@ def node_acc_reward(completions, solution, image_id, **kwargs):
                 match_objects.append(
                     f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                 )
-                reward +=  category_semantic_similarity(gt_id, pred_id)
+                reward +=  category_semantic_similarity(gt_id, pred_id) * NODE_REWARD_WEIGHT
 
             reward /= len(gt_objs) if gt_objs else 1
         except Exception:
@@ -293,8 +296,8 @@ def node_box_reward(completions, solution, image_id, **kwargs):
                 match_objects.append(
                     f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                 )
-                reward += compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']) * 0.5 + \
-                          np.exp(-box_L1(assign['groundtruth']['bbox'], pred_entry['bbox'])) * 0.5
+                reward += (compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']) * 0.5 + \
+                          np.exp(-box_L1(assign['groundtruth']['bbox'], pred_entry['bbox'])) * 0.5) * NODE_REWARD_WEIGHT
 
             reward /= len(gt_objs) if gt_objs else 1
         except Exception:
@@ -357,7 +360,7 @@ def edge_reward(completions, solution, image_id,  **kwargs):
                 obj_mapped = map_obj[obj]
                 if (sub_mapped, obj_mapped) in pred_triplets:
                     pred_pred = pred_triplets[(sub_mapped, obj_mapped)]
-                    reward += category_semantic_similarity(gt_rel['predicate'], pred_pred)
+                    reward += category_semantic_similarity(gt_rel['predicate'], pred_pred) * EDGE_REWARD_WEIGHT
                     match_triplets.append(
                         f"GT triplet: {sub_mapped} -> {gt_rel['predicate']} -> {obj_mapped}, "
                         f"Pred: {sub_mapped} -> {pred_pred} -> {obj_mapped}"
