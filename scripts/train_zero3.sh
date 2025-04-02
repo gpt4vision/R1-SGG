@@ -4,12 +4,12 @@
 
 #SBATCH --job-name=GRPO_train
 #SBATCH --time=24:00:00
-#SBATCH --nodes=1                   # 4 training nodes + 1 vLLM node = 5 nodes
-#SBATCH --ntasks=1                   # Total tasks equals total nodes
+#SBATCH --nodes=16                   # each node has 8x GPUs, 4x for training, 4x for vLLM inference 
+#SBATCH --ntasks=16                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=a100_80gb:8
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=25000M
+#SBATCH --gpus-per-node=rtx_4090:8
+#SBATCH --cpus-per-task=16
+#SBATCH --mem-per-cpu=16000M
 #SBATCH --output=RL_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
