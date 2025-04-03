@@ -508,22 +508,23 @@ class GRPOTrainerV2(Trainer):
             if isinstance(vllm_server_hosts, str):
                 vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
 
-            def get_gateway_client_id(world_size, rank, gpus_per_node, num_clients):
-                num_nodes = world_size // gpus_per_node
-                client_ranks = [
-                    (i % num_nodes) * gpus_per_node + (i // num_nodes)
-                    for i in range(num_clients)
-                ]
-                if rank in client_ranks:
-                    return client_ranks.index(rank)
-                return None
 
             rank = self.accelerator.process_index
-            world_size = self.accelerator.num_processes
-            gpus_per_node = torch.cuda.device_count()
             num_clients = len(vllm_server_hosts)
-            
-            client_id = get_gateway_client_id(world_size, rank, gpus_per_node, num_clients)
+            client_id = None
+
+            if args.vllm_locate_same_node:
+                # mixed mode:
+                # Training: [0-3] [0-3] ... [0-3] [0-7] [0-7] ...
+                # vLLM :    [4-7] [4-7] ... [4-7] 
+                # client_id: 0     1    ...  N
+                if rank  < num_clients * args.vllm_locate_same_remain_gpus and rank % args.vllm_locate_same_remain_gpus == 0:
+                    client_id = rank // args.vllm_locate_same_remain_gpus
+            else:
+                # Training: [0-7] [0-7] .... [0-7]
+                gpus_per_node = torch.cuda.device_count()
+                if rank < num_clients * gpus_per_node and rank % gpus_per_node == 0:
+                    client_id = rank // gpus_per_node
 
             # create N=len(hosts) clients
             if client_id is not None:

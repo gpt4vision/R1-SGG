@@ -229,6 +229,18 @@ class GRPOConfig(TrainingArguments):
             "running. To run the server, install vLLM (`pip install vllm`) and run `trl vllm-serve`."
         },
     )
+    vllm_locate_same_node: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to allocate vLLM and training jobs on same nodes."
+            },
+    )
+    vllm_locate_same_remain_gpus: int = field(
+        default=4,
+        metadata={
+            "help": "the number of remain GPUs for training if vLLM servers also be allocated on same nodes."
+            }
+    )
     vllm_server_host: str = field(
         default="0.0.0.0",
         metadata={"help": "Host of the vLLM server to connect to."},
