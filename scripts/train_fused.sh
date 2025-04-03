@@ -2,11 +2,11 @@
 
 #SBATCH --job-name=GRPO_train_vllm
 #SBATCH --time=24:00:00
-#SBATCH --nodes=24
-#SBATCH --ntasks=24
+#SBATCH --nodes=15
+#SBATCH --ntasks=15
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=rtx_4090:8
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=15
 #SBATCH --mem-per-cpu=16000M
 #SBATCH --output=TrainVLLM_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
@@ -39,6 +39,8 @@ if (( NUM_NODES % 3 != 0 )); then
 fi
 
 # Define how many nodes run mixed jobs (vLLM+training)
+NUM_VLLM_NODES=10
+NUM_REMAIN_NODES=(${GROUP_SIZE} - 4) * ${NUM_VLLM_NODES} // 8 #x
 # NUM_VLLM_NODES=
 # vLLM GPUs: 4*NUM_VLLM_NODES
 # Training GPUs: 4*NUM_VLLM_NODES + 8 * x = ${GROUP_SIZE} * NUM_VLLM_NODES
