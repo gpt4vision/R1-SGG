@@ -2,8 +2,8 @@
 
 #SBATCH --job-name=GRPO_train_vllm
 #SBATCH --time=24:00:00
-#SBATCH --nodes=16
-#SBATCH --ntasks=16
+#SBATCH --nodes=24
+#SBATCH --ntasks=24
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=rtx_4090:8
 #SBATCH --cpus-per-task=16
@@ -52,6 +52,13 @@ SERVER_PORT=$(cut -d: -f2 $IP_FILE | paste -sd,)
 echo "SERVER_IP=$SERVER_IP"
 echo "SERVER_PORT=$SERVER_PORT"
 echo "HEAD_NODE_IP=$HEAD_NODE_IP"
+
+
+# allocate 24 nodes, 2/3 for training, 1/3 for vllm inference
+# 
+#      node-0      node-1          node-14        node-15    ....
+# GPU [0,1,2,3] [0, 1, 2, 3] ... [0, 1, 2, 3] [0, 1, 2, 3] [0-7] [0-7] [0-7]  # 8*8+ 4*16=128
+# GPU [4,5,6,7] [4, 5, 6, 7] ... [4, 5, 6, 7] [4, 5, 6, 7] -> 64
 
 
 # ---------- Launch on Each Node ----------
