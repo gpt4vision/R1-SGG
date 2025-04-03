@@ -18,7 +18,7 @@ export WANDB_PROJECT=RL4SGG
 
 MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-grpo-g8-n4"
+RUN_NAME="qwen2vl-7b-grpo-g8-n1"
 OUTPUT_DIR="models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -68,7 +68,7 @@ for i in "${!NODELIST[@]}"; do
 
             python src/vllm_server_v2.py \
                 --model '${MODEL_PATH}' \
-                --gpu_memory_utilization 0.85 \
+                --gpu_memory_utilization 0.9 \
                 --enable-prefix-caching true \
                 --dtype 'bfloat16' \
                 --max_model_len 4096 \
@@ -96,7 +96,7 @@ for i in "${!NODELIST[@]}"; do
                 --max_prompt_length 2048 \
                 --max_completion_length 1024 \
                 --per_device_train_batch_size 1 \
-                --gradient_accumulation_steps 1 \
+                --gradient_accumulation_steps 2 \
                 --logging_steps 1 \
                 --use_vllm true \
                 --vllm_server_host ${SERVER_IP} \
@@ -104,7 +104,7 @@ for i in "${!NODELIST[@]}"; do
                 --vllm_server_timeout 600 \
                 --bf16 \
                 --report_to wandb \
-                --gradient_checkpointing false \
+                --gradient_checkpointing true \
                 --max_pixels ${MAX_PIXELS} \
                 --temperature 0.3 \
                 --top_p 0.001 \
@@ -113,7 +113,7 @@ for i in "${!NODELIST[@]}"; do
                 --run_name ${RUN_NAME} \
                 --save_steps 100 \
                 --num_generations 8 \
-		--num_iterations 4 \
+		--num_iterations 1 \
 		--beta 0.0 
         ) &
 
