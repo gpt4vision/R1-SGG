@@ -83,8 +83,10 @@ class VLLMClient:
         self.connection_timeout = connection_timeout
 
         self.client_rank = client_rank  # build a client <-> server mapping. If we have 8 servers, we should create 8 clients.
-        status = self.check_server(self.hosts[self.client_rank], self.server_ports[self.client_rank], connection_timeout, 60.0)
-        assert status, f"Failed to connect {self.hosts[self.client_rank]}: {self.server_ports[self.client_rank]}"
+        # check all servers
+        for host, port in zip(self.hosts, self.server_ports):
+            status = self.check_server(host, port, connection_timeout, 60.0)
+            assert status, f"Failed to connect {host}: {port}"
 
         self.disable_weight_sync = disable_weight_sync
         if not disable_weight_sync:
