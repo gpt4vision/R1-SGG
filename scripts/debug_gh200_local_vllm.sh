@@ -14,19 +14,13 @@ RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
-TP_SIZE=1
-PORT_BASE=8000
 MAX_PIXELS=$((512 * 28 * 28))
 
-
-MIXED_NODES=1  # Set this dynamically if needed
 
 
 HEAD_NODE_IP=0.0.0.0
 MASTER_PORT=29500
 
-SERVER_IP=$(hostname -I | awk '{print $1}')
-SERVER_PORT='8000'
 
 
 # zero2:
@@ -43,11 +37,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --gradient_accumulation_steps 1 \
     --logging_steps 1 \
     --use_vllm true \
-    --vllm_server_host ${SERVER_IP} \
-    --vllm_server_port ${SERVER_PORT} \
-    --vllm_server_timeout 600 \
-    --vllm_locate_same_node true\
-    --vllm_locate_same_remain_gpus 3\
+    --use_local_vllm true\
     --bf16 true\
     --tf32 true\
     --report_to wandb \
@@ -67,11 +57,9 @@ TRAIN_CMD="open_r1/grpo.py \
 
     
 echo "start training..."
-# Training: GPUs 0-3
-CUDA_VISIBLE_DEVICES=0,1,2 torchrun --nnodes=1 --nproc_per_node=3 \
+# Training: GPUs 0-3, batch size: 16*4//8=8
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nnodes=1 --nproc_per_node=4 \
     --node_rank=0 \
     --master_addr=${HEAD_NODE_IP} \
     --master_port=${MASTER_PORT} \
     ${TRAIN_CMD} > debug-gh200.log 2>&1 &
-
-
