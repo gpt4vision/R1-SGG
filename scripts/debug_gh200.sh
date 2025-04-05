@@ -7,7 +7,7 @@ export DEBUG_MODE=True
 export WANDB_PROJECT=RL4SGG
 
 
-GROUP_SIZE=3
+GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
 RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-gh200"
@@ -28,13 +28,18 @@ MASTER_PORT=29500
 SERVER_IP=$(hostname -I | awk '{print $1}')
 SERVER_PORT='8000'
 
+
+# zero2:
+# bsz_per_devie=16, OOM; Ok,  with CPU offload for optimizer, ~60h with 3x GPUs
+# bsz_per_devie=8, 386s for 30 steps, ~60h with 3x GPUs
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size 16 \
+    --deepspeed ./local_scripts/zero2.json \
     --gradient_accumulation_steps 1 \
     --logging_steps 1 \
     --use_vllm true \
@@ -80,6 +85,6 @@ CUDA_VISIBLE_DEVICES=0,1,2 torchrun --nnodes=1 --nproc_per_node=3 \
     --node_rank=0 \
     --master_addr=${HEAD_NODE_IP} \
     --master_port=${MASTER_PORT} \
-    ${TRAIN_CMD} > debug.log 2>&1 &
+    ${TRAIN_CMD} > debug-gh200.log 2>&1 &
 
 

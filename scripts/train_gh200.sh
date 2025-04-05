@@ -2,8 +2,8 @@
 
 #SBATCH --job-name=GRPO_gh200
 #SBATCH --time=00:30:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
+#SBATCH --nodes=2
+#SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4 # each has 4x GH200
 #SBATCH --cpus-per-task=288
@@ -71,8 +71,9 @@ TRAIN_CMD="open_r1/grpo.py \
     --vllm_server_port ${SERVER_PORT} \
     --vllm_server_timeout 600 \
     --vllm_locate_same_node true\
-    --vllm_locate_same_remain_gpus 4\
-    --bf16 \
+    --vllm_locate_same_remain_gpus 3\
+    --bf16 true\
+    --tf32 true\
     --report_to wandb \
     --gradient_checkpointing true \
     --max_pixels ${MAX_PIXELS} \

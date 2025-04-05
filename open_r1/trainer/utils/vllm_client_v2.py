@@ -16,10 +16,12 @@ import atexit
 import logging
 import time
 import copy
+import json
 from typing import Optional, List
 
 import torch
 from torch import nn
+from huggingface_hub import snapshot_download
 
 from trl.import_utils import is_vllm_available
 from .misc import is_requests_available
@@ -32,9 +34,16 @@ if is_requests_available():
     import requests
     from requests import ConnectionError
 
+
 if is_vllm_available():
+    from vllm import LLM, SamplingParams
     from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+    from vllm.distributed.parallel_state import get_world_group
     from vllm.distributed.utils import StatelessProcessGroup
+    from vllm.sampling_params import GuidedDecodingParams
+    from vllm.worker.worker import Worker
+else:
+    Worker = object
 
 
 logger = logging.getLogger(__name__)
@@ -58,48 +67,92 @@ class VLLMClient:
         group_port: int = 51216, 
         client_rank: int = 0,
         connection_timeout: float = 60.0,
-        disable_weight_sync: bool = False
+        disable_weight_sync: bool = False,
+        local_vllm: bool = False,
+        model_name: str = None,
+        revision: Optional[str] = None,
+        tensor_parallel_size: int = 1, 
+        pipeline_parallel_size: int = 1,
+        gpu_memory_utilization: float = 0.25, 
+        dtype: str = "auto",
+        enable_prefix_caching: Optional[bool] = None,
+        max_model_len: int = 4096,
+        limit_mm_per_prompt: int = 1
     ):
-        if not is_requests_available():
-            raise ImportError("requests is not installed. Please install it with `pip install requests`.")
-        if not is_vllm_available():
-            raise ImportError("vLLM is not installed. Please install it with `pip install vllm`.")
-
-        if isinstance(hosts, str):
-            hosts = [h.strip() for h in hosts.split(',')]            
-        if isinstance(server_ports, str):
-            server_ports = [e.strip() for e in server_ports.split(',')]
-
-        self.hosts = hosts
-        self.server_ports = server_ports
-        self.group_port = group_port
-
-        # Create a new persistent event loop running in the background
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-
-        # Initialize sessions and communicator
-        self.sessions = self.loop.run_until_complete(self._create_sessions(hosts))
-        self.connection_timeout = connection_timeout
-
-        self.client_rank = client_rank  # build a client <-> server mapping. If we have 8 servers, we should create 8 clients.
-        # check all servers
-        for host, port in zip(self.hosts, self.server_ports):
-            status = self.check_server(host, port, connection_timeout, 60.0)
-            assert status, f"Failed to connect {host}: {port}"
-
+        self.local_vllm = local_vllm
+        self.llm = None
         self.disable_weight_sync = disable_weight_sync
-        if not disable_weight_sync:
-            self.loop.run_until_complete(self.init_communicator())
-            atexit.register(self.cleanup)
 
-        print(f"VLLMClient connected to server hosts={self.hosts}, port={self.server_ports}")        
+        if self.local_vllm: # use vLLM on training nodes
+            print("initialze vLLM inference on training nodes...")
+            assert model_name, "model_name cannot be None!"
+            try:
+                local_model_path = snapshot_download(model_name)
+                print(f"set model:{model_name} to local path:", local_model_path)
+                model_name = local_model_path
+            except Exception:
+                pass            
+            # 
+            self.llm = LLM(
+                model=model_name,
+                revision=revision,
+                tensor_parallel_size=tensor_parallel_size,
+                pipeline_parallel_size=pipeline_parallel_size,
+                gpu_memory_utilization=gpu_memory_utilization,
+                dtype=dtype,
+                enable_prefix_caching=enable_prefix_caching,
+                max_model_len=max_model_len,
+                limit_mm_per_prompt={"image": limit_mm_per_prompt},
+            )
+            # Create a new persistent event loop running in the background
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
+            atexit.register(self.cleanup)
+        else:
+            if not is_requests_available():
+                raise ImportError("requests is not installed. Please install it with `pip install requests`.")
+            if not is_vllm_available():
+                raise ImportError("vLLM is not installed. Please install it with `pip install vllm`.")
+
+            if isinstance(hosts, str):
+                hosts = [h.strip() for h in hosts.split(',')]            
+            if isinstance(server_ports, str):
+                server_ports = [e.strip() for e in server_ports.split(',')]
+
+            self.hosts = hosts
+            self.server_ports = server_ports
+            self.group_port = group_port
+
+            # Create a new persistent event loop running in the background
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
+            # Initialize sessions and communicator
+            self.sessions = self.loop.run_until_complete(self._create_sessions(hosts))
+            self.connection_timeout = connection_timeout
+
+            self.client_rank = client_rank  # build a client <-> server mapping. If we have 8 servers, we should create 8 clients.
+            # check all servers
+            for host, port in zip(self.hosts, self.server_ports):
+                status = self.check_server(host, port, connection_timeout, 60.0)
+                assert status, f"Failed to connect {host}: {port}"
+
+            if not disable_weight_sync:
+                self.loop.run_until_complete(self.init_communicator())
+            
+            atexit.register(self.cleanup)
+            print(f"VLLMClient connected to server hosts={self.hosts}, port={self.server_ports}")        
 
     def cleanup(self):
         """Cleans up communicator and sessions on exit."""
         if not self.loop.is_closed():
-            self.loop.run_until_complete(self.close_communicator())
-            self.loop.run_until_complete(self.close_sessions())
+            if (not self.disable_weight_sync) and (not self.local_vllm):
+                self.loop.run_until_complete(self.close_communicator())
+	
+            if hasattr(self, "sessions"):	
+            	self.loop.run_until_complete(self.close_sessions())
+
             self.loop.close()        
 
     async def _create_sessions(self, hosts: List[str]) -> List[aiohttp.ClientSession]:
@@ -187,39 +240,58 @@ class VLLMClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        payload = {
-            "prompts": [],
-            "n": n,
-            "repetition_penalty": repetition_penalty,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "min_p": min_p,
-            "max_tokens": max_tokens,
-            "guided_decoding_regex": guided_decoding_regex,
-        }
+        if self.local_vllm:
+            if guided_decoding_regex is not None:
+                guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
+            else:
+                guided_decoding = None
 
-        tasks = []
-        total_hosts = len(self.hosts)
-        chunk_size = max(1, len(prompts) // total_hosts)
+            sampling_params = SamplingParams(
+                n=n,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                max_tokens=max_tokens,
+                guided_decoding=guided_decoding,
+            )
+            # Use vLLM's chat interface
+            all_outputs = self.llm.chat([json.loads(item) for item in prompts], sampling_params=sampling_params)
+            results = [list(output.token_ids) for outputs in all_outputs for output in outputs.outputs]
+        else:
+            payload = {
+                "prompts": [],
+                "n": n,
+                "repetition_penalty": repetition_penalty,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "min_p": min_p,
+                "max_tokens": max_tokens,
+                "guided_decoding_regex": guided_decoding_regex,
+            }
+            tasks = []
+            total_hosts = len(self.hosts)
+            chunk_size = max(1, len(prompts) // total_hosts)
 
-        for i, host in enumerate(self.hosts):
-            session = self.sessions[i]
-            start_idx = i * chunk_size
-            end_idx = None if i == total_hosts - 1 else (i + 1) * chunk_size
-            batch = prompts[start_idx:end_idx]
-            if not batch:
-                continue
+            for i, host in enumerate(self.hosts):
+                session = self.sessions[i]
+                start_idx = i * chunk_size
+                end_idx = None if i == total_hosts - 1 else (i + 1) * chunk_size
+                batch = prompts[start_idx:end_idx]
+                if not batch:
+                    continue
 
-            url = f"http://{host}:{self.server_ports[i]}/chat/"
-            batch_payload = copy.deepcopy(payload)
-            batch_payload["prompts"] = batch
-            tasks.append(self._async_post(session, url, batch_payload))
+                url = f"http://{host}:{self.server_ports[i]}/chat/"
+                batch_payload = copy.deepcopy(payload)
+                batch_payload["prompts"] = batch
+                tasks.append(self._async_post(session, url, batch_payload))
 
-        responses = await asyncio.gather(*tasks)
-        results = []
-        for res in responses:
-            results.extend(res["completion_ids"])
+            responses = await asyncio.gather(*tasks)
+            results = []
+            for res in responses:
+                results.extend(res["completion_ids"])
 
         return results
 
@@ -273,22 +345,29 @@ class VLLMClient:
             name (`str`): Name of the layer whose weights are being updated.
             weights (`torch.Tensor`): Tensor containing the updated weights.
         """
-        dtype, shape = str(weights.dtype), tuple(weights.shape)
-        payload = {"name": name, "dtype": dtype, "shape": shape}
+        if self.local_vllm: # directly load the weights
+            self.update_local_llm(name, weights)
+        else:
+            dtype, shape = str(weights.dtype), tuple(weights.shape)
+            payload = {"name": name, "dtype": dtype, "shape": shape}
     
-        host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
-        url = f"http://{host}:{port}/update_named_param/"
-        try:
-            response = requests.post(url, json=payload, timeout=self.connection_timeout)
-            if response.status_code != 200:
-                raise RuntimeError(f"[{host}] Failed to update param '{name}': {response.status_code} {response.text}")
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to send update_named_param to {host}: {e}")
-            raise        
+            host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
+            url = f"http://{host}:{port}/update_named_param/"
+            try:
+                response = requests.post(url, json=payload, timeout=self.connection_timeout)
+                if response.status_code != 200:
+                    raise RuntimeError(f"[{host}] Failed to update param '{name}': {response.status_code} {response.text}")
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] Failed to send update_named_param to {host}: {e}")
+                raise        
     
-        # Broadcast the weights to the other processes
-        self.pynccl_comm.broadcast(weights, src=self.rank, stream=torch.cuda.current_stream())
-        self.pynccl_comm.group.barrier()        
+            # Broadcast the weights to the other processes
+            self.pynccl_comm.broadcast(weights, src=self.rank, stream=torch.cuda.current_stream())
+            self.pynccl_comm.group.barrier()        
+
+    def update_local_llm(self, name: str, weights: torch.Tensor):
+        self.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(weights=[(name, weights)])
+        
 
     def update_model_params(self, model: nn.Module):
         """
@@ -307,6 +386,11 @@ class VLLMClient:
         Efficiently update model weights in dtype-wise chunks.
 
         """
+        if self.local_vllm:
+            for name, param in named_params:
+                self.update_local_llm(name, param.data)
+            return
+
         dtype_groups = defaultdict(list)
         for name, param in named_params:
             dtype_groups[str(param.dtype)].append((name, param))
@@ -330,22 +414,24 @@ class VLLMClient:
             buffer_tensor = torch.cat(tensors).to("cuda")
             self.pynccl_comm.broadcast(buffer_tensor, src=self.rank, stream=torch.cuda.current_stream())
             self.pynccl_comm.group.barrier()
-            #print(f"[Chunk] Synced {len(group)} params of dtype {dtype_str}")                
 
 
     def reset_prefix_cache(self):
         """
         Synchronously resets the prefix cache on all vLLM servers.
         """
-        host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
-        url = f"http://{host}:{port}/reset_prefix_cache/"
-        try:
-            response = requests.post(url, json={}, timeout=self.connection_timeout)
-            if response.status_code != 200:
-                raise RuntimeError(f"[{host}] Failed to reset prefix cache: {response.status_code} {response.text}")
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Could not reset prefix cache on {host}: {e}")
-            raise Exception(e)
+        if self.local_vllm:
+            self.llm.llm_engine.reset_prefix_cache()
+        else:
+            host, port = self.hosts[self.client_rank], self.server_ports[self.client_rank]
+            url = f"http://{host}:{port}/reset_prefix_cache/"
+            try:
+                response = requests.post(url, json={}, timeout=self.connection_timeout)
+                if response.status_code != 200:
+                    raise RuntimeError(f"[{host}] Failed to reset prefix cache: {response.status_code} {response.text}")
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] Could not reset prefix cache on {host}: {e}")
+                raise Exception(e)
 
     async def close_communicator(self):
         """
