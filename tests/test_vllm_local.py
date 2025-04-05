@@ -65,8 +65,8 @@ def main(args):
     prompts = [json.dumps(e) for e in prompts]
     print(len(prompts))
 
-    generated_ids = client.loop.run_until_complete(client.chat(prompts, n=8, max_tokens=1024,
-                top_p=0.001, top_k=1, temperature=1.0))
+    generated_ids = client.run_chat(prompts, n=8, max_tokens=1024,
+                top_p=0.001, top_k=1, temperature=1.0)
 
     t1 = time.time() - t0
     #generated_ids = [torch.as_tensor(e) for e in generated_ids]
