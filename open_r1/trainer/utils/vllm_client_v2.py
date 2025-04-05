@@ -104,11 +104,6 @@ class VLLMClient:
                 max_model_len=max_model_len,
                 limit_mm_per_prompt={"image": limit_mm_per_prompt},
             )
-            # Create a new persistent event loop running in the background
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-
-            atexit.register(self.cleanup)
         else:
             if not is_requests_available():
                 raise ImportError("requests is not installed. Please install it with `pip install requests`.")
@@ -200,6 +195,49 @@ class VLLMClient:
             _cnt += 1
 
         return False
+
+
+    def run_chat(
+        self,
+        prompts: list[str],
+        n: int = 1,
+        repetition_penalty: float = 1.0,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
+        min_p: float = 0.0,
+        max_tokens: int = 16,
+        guided_decoding_regex: Optional[str] = None,
+    ) -> list[list[str]]:
+        """
+        Unified wrapper for chat that handles sync (local_vllm) and async (remote vLLM) modes.
+        """
+        if self.local_vllm:
+            return self.chat(
+                prompts=prompts,
+                n=n,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                max_tokens=max_tokens,
+                guided_decoding_regex=guided_decoding_regex,
+            )
+        else:
+            return self.loop.run_until_complete(
+                self.chat(
+                    prompts=prompts,
+                    n=n,
+                    repetition_penalty=repetition_penalty,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    min_p=min_p,
+                    max_tokens=max_tokens,
+                    guided_decoding_regex=guided_decoding_regex,
+                )
+            )
 
     async def chat(
         self,

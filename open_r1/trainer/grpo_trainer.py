@@ -507,48 +507,48 @@ class GRPOTrainerV2(Trainer):
                 )
             if self.use_local_vllm:
                 self.vllm_client = VLLMClient(local_vllm=True, 
-                                              model_name=model_name, 
+                                              model_name=model if isinstance(model, str) else model.config._name_or_path, 
                                               max_model_len=args.vllm_max_model_len,
-					      gpu_memory_utilization=args.vllm_gpu_memory_utilization
-          				     )
+                                              gpu_memory_utilization=args.vllm_gpu_memory_utilization
+                                             )
             else:
-            	vllm_server_hosts = args.vllm_server_host 
-            	if isinstance(vllm_server_hosts, str):
-            	    vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
-            	if isinstance(args.vllm_server_port, str):
-            	    args.vllm_server_port = [e.strip() for e in args.vllm_server_port.split(',')]
-            	    
+                vllm_server_hosts = args.vllm_server_host 
+                if isinstance(vllm_server_hosts, str):
+                    vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
+                if isinstance(args.vllm_server_port, str):
+                    args.vllm_server_port = [e.strip() for e in args.vllm_server_port.split(',')]
 
-            	rank = self.accelerator.process_index
-            	num_clients = len(vllm_server_hosts)
-            	client_id = None
 
-            	if args.vllm_locate_same_node:
-            	    # mixed mode:
-            	    # Training: [0-3] [0-3] ... [0-3] [0-7] [0-7] ...
-            	    # vLLM :    [4-7] [4-7] ... [4-7] 
-            	    # client_id: 0     1    ...  N
-            	    if rank  < num_clients * args.vllm_locate_same_remain_gpus and rank % args.vllm_locate_same_remain_gpus == 0:
-            	        client_id = rank // args.vllm_locate_same_remain_gpus
-            	else:
-            	    # Training: [0-7] [0-7] .... [0-7]
-            	    gpus_per_node = torch.cuda.device_count()
-            	    if rank < num_clients * gpus_per_node and rank % gpus_per_node == 0:
-            	        client_id = rank // gpus_per_node
+                rank = self.accelerator.process_index
+                num_clients = len(vllm_server_hosts)
+                client_id = None
 
-            	# create N=len(hosts) clients
-            	if client_id is not None:
-            	    print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!", \
-            	          f" vllm_server_hosts={vllm_server_hosts}, ports={args.vllm_server_port}, \
-            	           connection_timeout={args.vllm_server_timeout}, num_clients={num_clients}")
-            	    self.vllm_client = VLLMClient(
-            	        vllm_server_hosts, 
-            	        args.vllm_server_port, 
-            	        connection_timeout=args.vllm_server_timeout,
-            	        client_rank = client_id
-            	    )
-            	else:
-            	    self.vllm_client = None
+                if args.vllm_locate_same_node:
+                    # mixed mode:
+                    # Training: [0-3] [0-3] ... [0-3] [0-7] [0-7] ...
+                    # vLLM :    [4-7] [4-7] ... [4-7] 
+                    # client_id: 0     1    ...  N
+                    if rank  < num_clients * args.vllm_locate_same_remain_gpus and rank % args.vllm_locate_same_remain_gpus == 0:
+                        client_id = rank // args.vllm_locate_same_remain_gpus
+                else:
+                    # Training: [0-7] [0-7] .... [0-7]
+                    gpus_per_node = torch.cuda.device_count()
+                    if rank < num_clients * gpus_per_node and rank % gpus_per_node == 0:
+                        client_id = rank // gpus_per_node
+
+                # create N=len(hosts) clients
+                if client_id is not None:
+                    print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!", \
+                          f" vllm_server_hosts={vllm_server_hosts}, ports={args.vllm_server_port}, \
+                           connection_timeout={args.vllm_server_timeout}, num_clients={num_clients}")
+                    self.vllm_client = VLLMClient(
+                        vllm_server_hosts, 
+                        args.vllm_server_port, 
+                        connection_timeout=args.vllm_server_timeout,
+                        client_rank = client_id
+                    )
+                else:
+                    self.vllm_client = None
 
             # vLLM specific sampling arguments
             self.guided_decoding_regex = args.vllm_guided_decoding_regex
@@ -821,10 +821,13 @@ class GRPOTrainerV2(Trainer):
         device = self.accelerator.device
         # 
         llm_inputs = []
+        profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext$
+        profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext
+        profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext
+
         if self.is_qwen2vl:
             """
                 base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
-
                 messages = [
                     {
                         "role": "system",
@@ -841,7 +844,7 @@ class GRPOTrainerV2(Trainer):
                 example={"prompt": messages, "image": image}
             """
             if self.use_vllm: # prepare data for vLLM servers
-                with profiling_context(self, "llm_inputs_prepare"):
+                with profiling_llm_inputs_prepare:
                     for example in inputs:
                         assert is_pil_image(example['image']), "image is not PIL.Image!"
 
@@ -856,7 +859,7 @@ class GRPOTrainerV2(Trainer):
 
                         llm_inputs.append(json.dumps(prompt_item))
 
-            with profiling_context(self, "processor_prepare"):
+            with profiling_processor:
                 prompts = [x["prompt"] for x in inputs]
                 prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
                 images = [x["image"] for x in inputs]
@@ -901,34 +904,60 @@ class GRPOTrainerV2(Trainer):
             else:
                 all_prompts_text = gather_object(prompts_text)
 
-            if self.accelerator.is_main_process:
-                # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
-                # num_generations outputs for each one. This is faster than generating outputs for each duplicate
-                # prompt individually.
-                ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
-                with profiling_context(self, "vLLM.generate"):
-                    completion_ids = self.vllm_client.loop.run_until_complete(self.vllm_client.chat(
-                        prompts=ordered_set_of_prompts,
-                        n=self.num_generations,
-                        repetition_penalty=self.repetition_penalty,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
-                        top_k=-1 if self.top_k is None else self.top_k,
-                        min_p=0.0 if self.min_p is None else self.min_p,
-                        max_tokens=self.max_completion_length,
-                        guided_decoding_regex=self.guided_decoding_regex,
-                    ))
+            ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+            if self.use_local_vllm:
+                # ordered_set_of_prompts will be divided into #world_size chunks
+                world_size = self.accelerator.num_processes
+                chunk_size = (len(ordered_set_of_prompts) + world_size -1 )// world_size
+                local_prompts = ordered_set_of_prompts[self.accelerator.process_index * chunk_size: \
+                                                       (self.accelerator.process_index+1) * chunk_size] 
+                
+                if len(local_prompts) > 0:
+                    with profiling_generate:
+                        completion_ids = self.vllm_client.run_chat($
+                            prompts=local_prompts,$
+                            n=self.num_generations,$
+                            repetition_penalty=self.repetition_penalty,$
+                            temperature=self.temperature,$
+                            top_p=self.top_p,$
+                            top_k=-1 if self.top_k is None else self.top_k,$
+                            min_p=0.0 if self.min_p is None else self.min_p,$
+                            max_tokens=self.max_completion_length,$
+                            guided_decoding_regex=self.guided_decoding_regex,$
+                        )
+                else:
+                     completion_ids = []
+                # gather from all processes
+                completion_ids = gather_object(completion_ids)
             else:
-                completion_ids = [None] * len(all_prompts_text)
-            # Broadcast the completions from the main process to all processes, ensuring each process receives its
-            # corresponding slice.
-            completion_ids = broadcast_object_list(completion_ids, from_process=0)
+                if self.accelerator.is_main_process:
+                    # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
+                    # num_generations outputs for each one. This is faster than generating outputs for each duplicate
+                    # prompt individually.
+                    with profiling_generate:
+                        completion_ids = self.vllm_client.run_chat(
+                            prompts=ordered_set_of_prompts,
+                            n=self.num_generations,
+                            repetition_penalty=self.repetition_penalty,
+                            temperature=self.temperature,
+                            top_p=self.top_p,
+                            top_k=-1 if self.top_k is None else self.top_k,
+                            min_p=0.0 if self.min_p is None else self.min_p,
+                            max_tokens=self.max_completion_length,
+                            guided_decoding_regex=self.guided_decoding_regex,
+                        )
+                else:
+                    completion_ids = [None] * len(all_prompts_text)
+
+                # Broadcast the completions from the main process to all processes, ensuring each process receives its
+                # corresponding slice.
+                completion_ids = broadcast_object_list(completion_ids, from_process=0)
+
             process_slice = slice(
                 self.accelerator.process_index * len(prompts),
                 (self.accelerator.process_index + 1) * len(prompts),
             )
             completion_ids = completion_ids[process_slice]
-
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
             completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
