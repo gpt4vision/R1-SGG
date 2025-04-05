@@ -23,9 +23,11 @@ MASTER_PORT=29500
 
 
 
+# GH200 has a very high bandwidth between CPU and GPU, we should use it!
 # zero2:
 # bsz_per_devie=16, OOM; Ok,  with CPU offload for optimizer, ~60h with 3x GPUs
 # bsz_per_devie=8, 386s for 30 steps, ~60h with 3x GPUs
+# 
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
     --model_name_or_path ${MODEL_PATH} \

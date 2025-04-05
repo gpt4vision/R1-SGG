@@ -509,7 +509,8 @@ class GRPOTrainerV2(Trainer):
                 self.vllm_client = VLLMClient(local_vllm=True, 
                                               model_name=model if isinstance(model, str) else model.config._name_or_path, 
                                               max_model_len=args.vllm_max_model_len,
-                                              gpu_memory_utilization=args.vllm_gpu_memory_utilization
+                                              gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                                              device='cuda:%s'%self.accelerator.process_index
                                              )
             else:
                 vllm_server_hosts = args.vllm_server_host 
@@ -821,9 +822,9 @@ class GRPOTrainerV2(Trainer):
         device = self.accelerator.device
         # 
         llm_inputs = []
-        profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext
-        profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext
-        profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext
+        profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext()
+        profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext()
+        profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext()
 
         if self.is_qwen2vl:
             """

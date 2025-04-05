@@ -77,7 +77,8 @@ class VLLMClient:
         dtype: str = "auto",
         enable_prefix_caching: Optional[bool] = None,
         max_model_len: int = 4096,
-        limit_mm_per_prompt: int = 1
+        limit_mm_per_prompt: int = 1,
+        device: str="auto"
     ):
         self.local_vllm = local_vllm
         self.llm = None
@@ -103,6 +104,7 @@ class VLLMClient:
                 enable_prefix_caching=enable_prefix_caching,
                 max_model_len=max_model_len,
                 limit_mm_per_prompt={"image": limit_mm_per_prompt},
+                device=device
             )
         else:
             if not is_requests_available():
