@@ -27,7 +27,7 @@ MASTER_PORT=29500
 # zero2:
 # bsz_per_devie=16, OOM; Ok,  with CPU offload for optimizer, ~60h with 3x GPUs
 # bsz_per_devie=8, 386s for 30 steps, ~60h with 3x GPUs
-# 
+# bsz_per_devie=16, ~40h with 4x GPUs
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
     --model_name_or_path ${MODEL_PATH} \
