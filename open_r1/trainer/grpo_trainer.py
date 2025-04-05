@@ -821,7 +821,7 @@ class GRPOTrainerV2(Trainer):
         device = self.accelerator.device
         # 
         llm_inputs = []
-        profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext$
+        profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext
         profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext
         profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext
 
@@ -914,16 +914,16 @@ class GRPOTrainerV2(Trainer):
                 
                 if len(local_prompts) > 0:
                     with profiling_generate:
-                        completion_ids = self.vllm_client.run_chat($
-                            prompts=local_prompts,$
-                            n=self.num_generations,$
-                            repetition_penalty=self.repetition_penalty,$
-                            temperature=self.temperature,$
-                            top_p=self.top_p,$
-                            top_k=-1 if self.top_k is None else self.top_k,$
-                            min_p=0.0 if self.min_p is None else self.min_p,$
-                            max_tokens=self.max_completion_length,$
-                            guided_decoding_regex=self.guided_decoding_regex,$
+                        completion_ids = self.vllm_client.run_chat(
+                            prompts=local_prompts,
+                            n=self.num_generations,
+                            repetition_penalty=self.repetition_penalty,
+                            temperature=self.temperature,
+                            top_p=self.top_p,
+                            top_k=-1 if self.top_k is None else self.top_k,
+                            min_p=0.0 if self.min_p is None else self.min_p,
+                            max_tokens=self.max_completion_length,
+                            guided_decoding_regex=self.guided_decoding_regex,
                         )
                 else:
                      completion_ids = []
