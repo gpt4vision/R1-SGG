@@ -83,7 +83,7 @@ class GRPOConfig(TrainingArguments):
             training, as vLLM will require one for generation. vLLM must be installed (`pip install vllm`).
         vllm_server_host (`str`, *optional*, defaults to `"0.0.0.0"`):
             Host of the vLLM server to connect to.
-        vllm_server_port (`int`, *optional*, defaults to `8000`):
+        vllm_server_port (`str`, *optional*, defaults to `8000`):
             Port of the vLLM server to connect to.
         vllm_server_timeout (`float`, *optional*, defaults to `120.0`):
             Total timeout duration in seconds to wait for the vLLM server to be up. If the server is not up after the

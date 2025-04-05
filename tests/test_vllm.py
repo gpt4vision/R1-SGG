@@ -23,7 +23,9 @@ def encode_image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def prepare_messages(image):
+def prepare_messages(item):
+    image = item['image']
+    prompt = item['prompt_open']
     encoded_image_text = encode_image_to_base64(image)
     base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
 
@@ -33,7 +35,7 @@ def prepare_messages(image):
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": {"url": base64_qwen}},
-                {"type": "text", "text": "Describe this image."},
+                {"type": "text", "text": prompt},
             ],
         },
     ]
@@ -44,15 +46,6 @@ def prepare_messages(image):
 
 
 def main(args):
-    args.hosts = [line.strip() for line in open("ip_list2.txt")]
-    hosts, ports = [], []
-    for line in open("ip_port_list2.txt"):
-        host, port =line.strip().split(':')
-        hosts.append(host)
-        ports.append(port)
-
-    args.hosts = hosts
-    args.server_port = ports
     db = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
 
     print(f"[INFO] Connecting to vLLM server at {args.hosts}:{args.server_port}")
@@ -60,7 +53,7 @@ def main(args):
     prompts = []
     for kk, item in enumerate(tqdm(db)):
         if kk > 10: break
-        prompt = prepare_messages(item['image'])
+        prompt = prepare_messages(item)
         prompts.append(prompt)
 
 
@@ -68,7 +61,7 @@ def main(args):
         hosts=args.hosts, #.split(','),
         server_ports=args.server_port,
         group_port=args.group_port,
-        connection_timeout=120,
+        connection_timeout=60,
     )
 
     print("[INFO] Running vLLM inference...")
@@ -76,7 +69,7 @@ def main(args):
     prompts = [json.dumps(e) for e in prompts]
     print(len(prompts))
 
-    generated_ids = client.loop.run_until_complete(client.chat(prompts, n=1, max_tokens=128,
+    generated_ids = client.loop.run_until_complete(client.chat(prompts, n=8, max_tokens=1024,
                 top_p=0.001, top_k=1, temperature=0.01))
 
     t1 = time.time() - t0
@@ -84,7 +77,7 @@ def main(args):
     outputs = processor.batch_decode(generated_ids, skip_special_tokens=True), 
     print(len(outputs))
     print("****** vLLM generated text:", 
-         outputs,
+         outputs[0][0],
         " cost:", t1)
 
 
@@ -144,13 +137,11 @@ def main(args):
         return sum(cost) / len(cost)    
 
 
-    for _ in range(1):
-        client.update_model_in_chunks(model, 1)
 
-    for k in range(1, 50):
+    for k in range(1, 10):
         try:
             GB = (1<<30) * 0.1  * k
-            print(f"update cost with chunk size={GB} GB:", cal_cost_by_size(client, model, GB))
+            print(f"update cost with chunk size={k} GB:", cal_cost_by_size(client, model, GB))
         except:
             print("Timeout at", k)
             break
@@ -158,8 +149,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    #parser.add_argument("--hosts", type=str, default="[0.0.0.0]", help="Host address of the vLLM server.")
-    parser.add_argument("--server_port", type=int, default=8888, help="Port for vLLM API requests.")
+    parser.add_argument("--hosts", type=str, default="[0.0.0.0]", help="Host address of the vLLM server.")
+    parser.add_argument("--server_port", type=str, default='8888', help="Port for vLLM API requests.")
     parser.add_argument("--group_port", type=int, default=51216, help="Port for NCCL communication.")
     parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Model ID or path.")
     args = parser.parse_args()

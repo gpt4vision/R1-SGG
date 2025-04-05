@@ -1,30 +1,34 @@
 #!/bin/bash
 
-#SBATCH --job-name=GRPO_train_vllm
-#SBATCH --time=24:00:00
+#SBATCH --job-name=GRPO_gh200
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4 # each has 4x GH200
-#SBATCH --cpus-per-task=16
-#SBATCH --mem-per-cpu=16000M
+#SBATCH --cpus-per-task=288
 
 #SBATCH --account=a-a03
+#SBATCH --partition=normal
+
 #SBATCH --output=TrainVLLM_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 set -euo pipefail
 
+
+export HF_HOME=$SCRATCH/huggingface
 # ---------- Environment Setup ----------
 export NCCL_ASYNC_ERROR_HANDLING=1
 export DEBUG_MODE=True
 export WANDB_PROJECT=RL4SGG
 
+
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1"
-OUTPUT_DIR="models/${RUN_NAME}"
+RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-gh200"
+OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
 TP_SIZE=1

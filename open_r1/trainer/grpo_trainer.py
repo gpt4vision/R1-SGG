@@ -507,7 +507,9 @@ class GRPOTrainerV2(Trainer):
             vllm_server_hosts = args.vllm_server_host 
             if isinstance(vllm_server_hosts, str):
                 vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
-
+            if isinstance(args.vllm_server_port, str):
+                args.vllm_server_port = [e.strip() for e in args.vllm_server_port.split(',')]
+                
 
             rank = self.accelerator.process_index
             num_clients = len(vllm_server_hosts)
@@ -528,13 +530,15 @@ class GRPOTrainerV2(Trainer):
 
             # create N=len(hosts) clients
             if client_id is not None:
+                print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!", \
+                      f" vllm_server_hosts={vllm_server_hosts}, ports={args.vllm_server_port}, \
+                       connection_timeout={args.vllm_server_timeout}, num_clients={num_clients}")
                 self.vllm_client = VLLMClient(
                     vllm_server_hosts, 
                     args.vllm_server_port, 
                     connection_timeout=args.vllm_server_timeout,
                     client_rank = client_id
                 )
-                print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!")
             else:
                 self.vllm_client = None
 
