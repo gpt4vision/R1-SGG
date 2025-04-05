@@ -497,6 +497,7 @@ class GRPOTrainerV2(Trainer):
         # it's safer to set it in all cases.
         set_seed(args.seed, device_specific=True)
         self.vllm_client = None
+        self.use_local_vllm = args.use_local_vllm
 
         if self.use_vllm:
             if not is_vllm_available():
@@ -504,43 +505,50 @@ class GRPOTrainerV2(Trainer):
                     "vLLM is not available and `use_vllm` is set to True. Please install vLLM with "
                     "`pip install vllm` to use it."
                 )
-            vllm_server_hosts = args.vllm_server_host 
-            if isinstance(vllm_server_hosts, str):
-                vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
-            if isinstance(args.vllm_server_port, str):
-                args.vllm_server_port = [e.strip() for e in args.vllm_server_port.split(',')]
-                
-
-            rank = self.accelerator.process_index
-            num_clients = len(vllm_server_hosts)
-            client_id = None
-
-            if args.vllm_locate_same_node:
-                # mixed mode:
-                # Training: [0-3] [0-3] ... [0-3] [0-7] [0-7] ...
-                # vLLM :    [4-7] [4-7] ... [4-7] 
-                # client_id: 0     1    ...  N
-                if rank  < num_clients * args.vllm_locate_same_remain_gpus and rank % args.vllm_locate_same_remain_gpus == 0:
-                    client_id = rank // args.vllm_locate_same_remain_gpus
+            if self.use_local_vllm:
+                self.vllm_client = VLLMClient(local_vllm=True, 
+                                              model_name=model_name, 
+                                              max_model_len=args.vllm_max_model_len,
+					      gpu_memory_utilization=args.vllm_gpu_memory_utilization
+          				     )
             else:
-                # Training: [0-7] [0-7] .... [0-7]
-                gpus_per_node = torch.cuda.device_count()
-                if rank < num_clients * gpus_per_node and rank % gpus_per_node == 0:
-                    client_id = rank // gpus_per_node
+            	vllm_server_hosts = args.vllm_server_host 
+            	if isinstance(vllm_server_hosts, str):
+            	    vllm_server_hosts = [e.strip() for e in vllm_server_hosts.split(',')] # hack
+            	if isinstance(args.vllm_server_port, str):
+            	    args.vllm_server_port = [e.strip() for e in args.vllm_server_port.split(',')]
+            	    
 
-            # create N=len(hosts) clients
-            if client_id is not None:
-                print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!", \
-                      f" vllm_server_hosts={vllm_server_hosts}, ports={args.vllm_server_port}, \
-                       connection_timeout={args.vllm_server_timeout}, num_clients={num_clients}")
-                self.vllm_client = VLLMClient(
-                    vllm_server_hosts, 
-                    args.vllm_server_port, 
-                    connection_timeout=args.vllm_server_timeout,
-                    client_rank = client_id
-                )
-            else:
-                self.vllm_client = None
+            	rank = self.accelerator.process_index
+            	num_clients = len(vllm_server_hosts)
+            	client_id = None
+
+            	if args.vllm_locate_same_node:
+            	    # mixed mode:
+            	    # Training: [0-3] [0-3] ... [0-3] [0-7] [0-7] ...
+            	    # vLLM :    [4-7] [4-7] ... [4-7] 
+            	    # client_id: 0     1    ...  N
+            	    if rank  < num_clients * args.vllm_locate_same_remain_gpus and rank % args.vllm_locate_same_remain_gpus == 0:
+            	        client_id = rank // args.vllm_locate_same_remain_gpus
+            	else:
+            	    # Training: [0-7] [0-7] .... [0-7]
+            	    gpus_per_node = torch.cuda.device_count()
+            	    if rank < num_clients * gpus_per_node and rank % gpus_per_node == 0:
+            	        client_id = rank // gpus_per_node
+
+            	# create N=len(hosts) clients
+            	if client_id is not None:
+            	    print(f"Rank={rank} create a VLLMClient instance with client_rank={client_id}!", \
+            	          f" vllm_server_hosts={vllm_server_hosts}, ports={args.vllm_server_port}, \
+            	           connection_timeout={args.vllm_server_timeout}, num_clients={num_clients}")
+            	    self.vllm_client = VLLMClient(
+            	        vllm_server_hosts, 
+            	        args.vllm_server_port, 
+            	        connection_timeout=args.vllm_server_timeout,
+            	        client_rank = client_id
+            	    )
+            	else:
+            	    self.vllm_client = None
 
             # vLLM specific sampling arguments
             self.guided_decoding_regex = args.vllm_guided_decoding_regex

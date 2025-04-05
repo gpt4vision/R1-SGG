@@ -229,6 +229,12 @@ class GRPOConfig(TrainingArguments):
             "running. To run the server, install vLLM (`pip install vllm`) and run `trl vllm-serve`."
         },
     )
+    use_local_vllm: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use local vLLM engine."
+        },
+    )
     vllm_locate_same_node: bool = field(
         default=True,
         metadata={
