@@ -213,8 +213,12 @@ class VLLMClient:
         Unified wrapper for chat that handles sync (local_vllm) and async (remote vLLM) modes.
         """
         if self.local_vllm:
-            return self.chat(
-                prompts=prompts,
+            if guided_decoding_regex is not None:
+                guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
+            else:
+                guided_decoding = None
+
+            sampling_params = SamplingParams(
                 n=n,
                 repetition_penalty=repetition_penalty,
                 temperature=temperature,
@@ -222,8 +226,13 @@ class VLLMClient:
                 top_k=top_k,
                 min_p=min_p,
                 max_tokens=max_tokens,
-                guided_decoding_regex=guided_decoding_regex,
+                guided_decoding=guided_decoding,
             )
+            # Use vLLM's chat interface
+            all_outputs = self.llm.chat([json.loads(item) for item in prompts], sampling_params=sampling_params)
+            results = [list(output.token_ids) for outputs in all_outputs for output in outputs.outputs]
+            
+            return results
         else:
             return self.loop.run_until_complete(
                 self.chat(
@@ -278,58 +287,38 @@ class VLLMClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        if self.local_vllm:
-            if guided_decoding_regex is not None:
-                guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
-            else:
-                guided_decoding = None
+        payload = {
+            "prompts": [],
+            "n": n,
+            "repetition_penalty": repetition_penalty,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "max_tokens": max_tokens,
+            "guided_decoding_regex": guided_decoding_regex,
+        }
+        tasks = []
+        total_hosts = len(self.hosts)
+        chunk_size = max(1, len(prompts) // total_hosts)
 
-            sampling_params = SamplingParams(
-                n=n,
-                repetition_penalty=repetition_penalty,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                min_p=min_p,
-                max_tokens=max_tokens,
-                guided_decoding=guided_decoding,
-            )
-            # Use vLLM's chat interface
-            all_outputs = self.llm.chat([json.loads(item) for item in prompts], sampling_params=sampling_params)
-            results = [list(output.token_ids) for outputs in all_outputs for output in outputs.outputs]
-        else:
-            payload = {
-                "prompts": [],
-                "n": n,
-                "repetition_penalty": repetition_penalty,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "min_p": min_p,
-                "max_tokens": max_tokens,
-                "guided_decoding_regex": guided_decoding_regex,
-            }
-            tasks = []
-            total_hosts = len(self.hosts)
-            chunk_size = max(1, len(prompts) // total_hosts)
+        for i, host in enumerate(self.hosts):
+            session = self.sessions[i]
+            start_idx = i * chunk_size
+            end_idx = None if i == total_hosts - 1 else (i + 1) * chunk_size
+            batch = prompts[start_idx:end_idx]
+            if not batch:
+                continue
 
-            for i, host in enumerate(self.hosts):
-                session = self.sessions[i]
-                start_idx = i * chunk_size
-                end_idx = None if i == total_hosts - 1 else (i + 1) * chunk_size
-                batch = prompts[start_idx:end_idx]
-                if not batch:
-                    continue
+            url = f"http://{host}:{self.server_ports[i]}/chat/"
+            batch_payload = copy.deepcopy(payload)
+            batch_payload["prompts"] = batch
+            tasks.append(self._async_post(session, url, batch_payload))
 
-                url = f"http://{host}:{self.server_ports[i]}/chat/"
-                batch_payload = copy.deepcopy(payload)
-                batch_payload["prompts"] = batch
-                tasks.append(self._async_post(session, url, batch_payload))
-
-            responses = await asyncio.gather(*tasks)
-            results = []
-            for res in responses:
-                results.extend(res["completion_ids"])
+        responses = await asyncio.gather(*tasks)
+        results = []
+        for res in responses:
+            results.extend(res["completion_ids"])
 
         return results
 
