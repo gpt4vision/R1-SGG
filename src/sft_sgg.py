@@ -46,7 +46,7 @@ except:
 
 from qwen_vl_utils import process_vision_info
 
-def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.Module:
+def construct_model_and_processor(model_name: str, use_liger: bool, **model_kwargs) -> torch.nn.Module:
     if "Qwen2-VL" in model_name:
         min_visual_tokens_per_image = 4
         max_visual_tokens_per_image = 1024
@@ -68,13 +68,11 @@ def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.
                 # cross_entropy=True,
                 # fused_linear_cross_entropy=False,
             )
+            model_kwargs['use_cache'] = False
 
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             pretrained_model_name_or_path=model_name,
-            use_cache=False,
-            torch_dtype=torch.bfloat16,
-            low_cpu_mem_usage=True,
-            attn_implementation="sdpa",
+            **model_kwargs
         )
         return model, processor, image_token_id
 
@@ -166,7 +164,7 @@ def format_data(sample, shuffle=False):
 
     image = sample["image"].convert('RGB')
     iw, ih = image.size
-    prompt = sample['prompt_close']
+    prompt = sample['prompt_close'] # close, or open
     prompt = prompt.replace(f"of size ({iw} x {ih})", "")
 
 
@@ -230,7 +228,7 @@ def main():
     training_args.model_init_kwargs = model_kwargs
 
     if training_args.use_liger and _is_liger_kernel_available:
-        model, processor, image_token_id = construct_model_and_processor(model_args.model_name_or_path, True)
+        model, processor, image_token_id = construct_model_and_processor(model_args.model_name_or_path, True, **model_kwargs)
     else:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path, **model_kwargs
