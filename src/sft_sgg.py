@@ -173,10 +173,10 @@ def format_data(sample, shuffle=False):
 
     #normalize box to [0, 1000]
     objs = []
-    for obj in sample['objects']:
+    for obj in json.loads(sample['objects']):
         box = obj['bbox']
         obj['bbox'] = [int(box[0]/iw*1000), int(box[1]/ih*1000),
-                       int(box[2[/iw*1000), int(box[3]/ih*1000)]
+                       int(box[2]/iw*1000), int(box[3]/ih*1000)]
         objs.append(obj)
 
     answer = format_answer(objs, sample["relationships"], shuffle=shuffle)
