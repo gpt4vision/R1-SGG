@@ -395,7 +395,8 @@ class VLLMClient:
             self.pynccl_comm.group.barrier()        
 
     def update_local_llm(self, name: str, weights: torch.Tensor):
-        self.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(weights=[(name, weights)])
+        params = self.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(weights=[(name, weights)])
+        return params
         
 
     def update_model_params(self, model: nn.Module):
@@ -416,9 +417,11 @@ class VLLMClient:
 
         """
         if self.local_vllm:
+            updated_params = set()
             for name, param in named_params:
-                self.update_local_llm(name, param.data)
-            return
+                param_tmp = self.update_local_llm(name, param.data)
+                updated_params.update(param_tmp)
+            return updated_params
 
         dtype_groups = defaultdict(list)
         for name, param in named_params:

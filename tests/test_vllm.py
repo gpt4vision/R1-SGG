@@ -63,6 +63,11 @@ def main(args):
         group_port=args.group_port,
         connection_timeout=60,
     )
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        "Qwen/Qwen2-VL-7B-Instruct", torch_dtype="auto", device_map="auto"
+    )    
+    for name, param in model.named_parameters():
+        client.update_named_param(name, param)
 
     print("[INFO] Running vLLM inference...")
     t0 = time.time()
@@ -81,9 +86,6 @@ def main(args):
         " cost:", t1)
 
 
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen2-VL-7B-Instruct", torch_dtype="auto", device_map="auto"
-    )    
 
     def cal_cost(client, model, lens):
         cost = []
@@ -149,8 +151,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hosts", type=str, default="[0.0.0.0]", help="Host address of the vLLM server.")
-    parser.add_argument("--server_port", type=str, default='8888', help="Port for vLLM API requests.")
+    parser.add_argument("--hosts", type=str, default="[127.0.0.1]", help="Host address of the vLLM server.")
+    parser.add_argument("--server_port", type=str, default='8000', help="Port for vLLM API requests.")
     parser.add_argument("--group_port", type=int, default=51216, help="Port for NCCL communication.")
     parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Model ID or path.")
     args = parser.parse_args()

@@ -3,6 +3,7 @@ import base64
 from io import BytesIO
 import json
 import time
+import random
 from typing import List
 from transformers import AutoProcessor
 
@@ -59,13 +60,19 @@ def main(args):
        local_vllm=True,
        model_name=args.model_name_or_path
     )
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        "Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto"
+    )    
+
+
+
 
     print("[INFO] Running vLLM inference...")
     t0 = time.time()
     prompts = [json.dumps(e) for e in prompts]
     print(len(prompts))
 
-    generated_ids = client.run_chat(prompts, n=8, max_tokens=1024,
+    generated_ids = client.run_chat(prompts, n=1, max_tokens=100,
                 top_p=0.001, top_k=1, temperature=1.0)
 
     t1 = time.time() - t0
@@ -77,10 +84,76 @@ def main(args):
         print(outputs[0][i])
 
     print(" cost:", t1)
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen2-VL-7B-Instruct", torch_dtype="auto", device_map="auto"
-    )    
 
+    # check weight sync.
+    llmp = client.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    llmp_dicts = dict(llmp.named_parameters())
+
+    miss1 = []
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            # Fetch corresponding param from llmp
+            llmp_param = llmp_dicts.get(name, None)
+            if llmp_param is None:
+                #print(f"[WARN] Parameter {name} not found in vLLM model.")
+                  miss1.append( (name, param.data.min()) )
+                  param.data += 100
+                  continue
+               
+            # Compare tensors
+            if not torch.allclose(param.data, llmp_param.data, atol=1e-5):
+                print(f"[FAIL] Mismatch in param '{name}'")
+            else:
+                print(f"[PASS] Param '{name}' is synchronized.")
+            param.data += 100
+
+
+    print("\n", "*"*100, "start weight synchronization ...\n", "*"*100, "\n")
+    max_chunk_size = 100 * 1024 * 1024  # 100 MB
+    param_chunk = []
+    current_chunk_size = 0     
+    del llmp_dicts
+
+    t0 = time.time()
+    updated_params = set()
+    for name, param in model.named_parameters():
+        # Calculate the size of this parameter in bytes
+        param_size = param.numel() * param.element_size()
+
+        param_chunk.append((name, param.data))
+        current_chunk_size += param_size
+    
+        # When the accumulated chunk reaches or exceeds 100MB, update the model parameters in one chunk.
+        if current_chunk_size >= max_chunk_size:
+            old = client.update_model_in_chunks_from_named_list(param_chunk)
+            updated_params.update(old)
+            # Reset for the next chunk
+            param_chunk = []
+            current_chunk_size = 0
+
+    if param_chunk and client is not None:
+        client.update_model_in_chunks_from_named_list(param_chunk)
+    t1 = time.time()
+    print("weight synchronization cost:", t1-t0)
+    # check again
+    llmp_dicts = dict(llmp.named_parameters())
+
+    miss2 = []
+    for name, param in model.named_parameters():
+        # Fetch corresponding param from llmp
+        llmp_param = llmp_dicts.get(name, None)
+        if llmp_param is None:
+            miss2.append((name, param.data.min()))
+            #print(f"[WARN] Parameter {name} not found in vLLM model.")
+            continue
+        # Compare tensors
+        if not torch.allclose(param.data, llmp_param.data, atol=1e-5):
+            print(f"[FAIL] Mismatch in param '{name}'")
+        else:
+            print(f"[PASS] Param '{name}' is synchronized.")
+
+    #import pdb; pdb.set_trace()
+   
     def cal_cost(client, model, lens):
         cost = []
         for i in range(3):
