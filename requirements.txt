@@ -6,18 +6,16 @@ numpy==1.26.4
 pillow==10.4.0
 qwen_vl_utils
 tqdm
-typing_extensions==4.12.2
-pydantic==2.10.6
-pydantic_core==2.27.2
-thinc==8.2.2              # Compatible with pydantic>=2.0
+typing_extensions>=4.12.2
+pydantic>=2.10.6
+pydantic_core>=2.27.2
+thinc>=8.2.2              
 packaging==24.2
 PyYAML==6.0.2
 spacy
 scipy
 safetensors==0.5.3
-transformers@git+https://github.com/huggingface/transformers.git@2c2495cc7b0e3e2942a9310f61548f40a2bc8425
-trl@git+https://github.com/huggingface/trl.git@e3244d2d096ff1e2e248c931d06d39e165e20623
 fastapi
 openai==1.65.5
-#vllm==0.7.3
+vllm==0.7.3
 wandb==0.18.3
