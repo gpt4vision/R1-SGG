@@ -54,6 +54,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --num_generations ${GROUP_SIZE} \
     --num_iterations 1 \
     --beta 0.0\
+    --use_liger_loss true\
     --vllm_max_model_len 4096 \
     --vllm_gpu_memory_utilization 0.25"
 

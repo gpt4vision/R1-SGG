@@ -21,6 +21,9 @@ from typing import Optional
 from tqdm import tqdm
 
 import torch
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+
 import numpy as np
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
@@ -489,7 +492,8 @@ def main(script_args, training_args, model_args):
                 new_iw, new_ih = image.size
 
                 org_prompt = example['prompt_open']
-                org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", f"({new_iw} x {new_ih})")
+                #org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", f"({new_iw} x {new_ih})")
+                org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", "") # not provide image size
 
                 prompt = [
                     {"role": "system", "content": SYSTEM_PROMPT},
