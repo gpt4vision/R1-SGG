@@ -1189,12 +1189,44 @@ class GRPOTrainerV2(Trainer):
         unwrapped_model = self.accelerator.unwrap_model(model)
         if pixel_values is None:
             last_hidden_state = unwrapped_model.model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        else:
-            last_hidden_state = unwrapped_model.model(input_ids=input_ids, 
-                                                      attention_mask=attention_mask,
-                                                      pixel_values=pixel_values,
-                                                      image_grid_thw=image_grid_thw
-                                                     ).last_hidden_state
+        else: 
+            assert self.is_qwen2vl, "_get_last_hidden_state with pixel_values only supports Qwen2VL now !"
+
+            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L1638
+            inputs_embeds = unwrapped_model.model.embed_tokens(input_ids)
+            if pixel_values is not None:
+                pixel_values = pixel_values.type(unwrapped_model.visual.get_dtype())
+                image_embeds = unwrapped_model.visual(pixel_values, grid_thw=image_grid_thw)
+                n_image_tokens = (input_ids == unwrapped_model.config.image_token_id).sum().item()
+                n_image_features = image_embeds.shape[0]
+                if n_image_tokens != n_image_features:
+                    raise ValueError(
+                        f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                    )
+                image_mask = (
+                    (input_ids == unwrapped_model.config.image_token_id)
+                    .unsqueeze(-1)
+                    .expand_as(inputs_embeds)
+                    .to(inputs_embeds.device)
+                )
+                image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+                inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)           
+
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(inputs_embeds.device)            
+
+            if True:
+                video_grid_thw=None
+                position_ids, rope_deltas = unwrapped_model.get_rope_index(
+                    input_ids, image_grid_thw, video_grid_thw, attention_mask
+                )
+                unwrapped_model.rope_deltas = rope_deltas                
+
+            last_hidden_state = unwrapped_model.model(input_ids=None, 
+                                   position_ids=position_ids,
+                                   attention_mask=attention_mask,
+                                   inputs_embeds=inputs_embeds,
+                                   ).last_hidden_state
         last_hidden_state = last_hidden_state[:, :-1, :]  # (B, L-1, H)
         if logits_to_keep is not None:
             last_hidden_state = last_hidden_state[:, -logits_to_keep:, :]  # (B, logits_to_keep, H)
