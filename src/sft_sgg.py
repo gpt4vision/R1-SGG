@@ -88,8 +88,11 @@ Now, generate the complete scene graph for the provided image:
 
 
 def format_answer(objects:str, relationships:str, shuffle=False):
-    objects = json.loads(objects) # a list of {"id": xxx, "bbox": xxx}
-    relationships = json.loads(relationships)
+    if isinstance(objects, str):
+        objects = json.loads(objects) # a list of {"id": xxx, "bbox": xxx}
+    if isinstance(relationships, str):
+        relationships = json.loads(relationships)
+
     if shuffle:
         random.shuffle(objects)
 
