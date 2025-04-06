@@ -5,10 +5,10 @@
 #SBATCH --job-name=SFT_vg150_SGG
 #SBATCH --time=24:00:00
 
-## Using 2 nodes (each node has 8x4090 GPUs)
+## Using 16 nodes (each node has 8x4090 GPUs), adjust this if needed
 
-#SBATCH --nodes=8
-#SBATCH --ntasks=8
+#SBATCH --nodes=16
+#SBATCH --ntasks=16
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=rtx_4090:8
 #SBATCH --cpus-per-task=8
@@ -32,31 +32,32 @@ export GPUS_PER_NODE=8
 export WANDB_PROJECT=RL4SGG
 
 
-# 8*8
+# 16*8
 srun torchrun --nnodes ${SLURM_NNODES} \
     --nproc_per_node $GPUS_PER_NODE \
     --node_rank $NODE_RANK \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
     --rdzv_endpoint ${head_node_ip}:29500 \
-    src/sft_sgg.py \
+    sft_sgg.py \
     --deepspeed configs/zero3.json \
     --model_name_or_path Qwen/Qwen2-VL-7B-Instruct \
     --dataset_name JosephZ/vg150_train_sgg_prompt \
-    --learning_rate 1.0e-5 \
+    --learning_rate 5e-5 \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 1 \
     --warmup_ratio 0.05 \
     --max_grad_norm 0.3 \
     --logging_steps 1 \
-    --bf16 \
+    --bf16 true\
+    --tf32 true\
     --report_to wandb \
     --gradient_checkpointing True \
     --attn_implementation flash_attention_2 \
     --num_train_epochs 3 \
-    --run_name Qwen2-VL-7B_vg150_sgg_b64_normal_e3 \
+    --run_name Qwen2-VL-7B_vg150_sgg_b128_normal_e3 \
     --save_steps 500 \
     --save_only_model true \
     --torch_dtype bfloat16 \
-    --output_dir models/qwen2vl-7b-sft-vg150-b64-normal-e3
+    --output_dir models/qwen2vl-7b-sft-vg150-b128-normal-e3
 
