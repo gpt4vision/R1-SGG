@@ -36,6 +36,7 @@ import torch
 import torch.utils.data
 import transformers
 from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
+
 from datasets import Dataset, IterableDataset
 from packaging import version
 from torch import nn
@@ -69,6 +70,7 @@ from trl.extras.profiling import profiling_context, profiling_decorator
 
 from .utils.vllm_client_v2 import VLLMClient
 
+from transformers.utils import is_liger_kernel_available
 from trl.import_utils import is_deepspeed_available, is_rich_available, is_vllm_available
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.callbacks import SyncRefModelCallback
@@ -92,9 +94,12 @@ if is_deepspeed_available():
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 
+if is_liger_kernel_available():
+    from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 
 if is_wandb_available():
     import wandb
+
 
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
@@ -437,6 +442,7 @@ class GRPOTrainerV2(Trainer):
         self.min_p = args.min_p
         self.repetition_penalty = args.repetition_penalty
         self.use_vllm = args.use_vllm
+        self.use_liger_loss = args.use_liger_loss
 
         # Multi-step
         self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
@@ -460,6 +466,22 @@ class GRPOTrainerV2(Trainer):
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self._total_train_tokens = 0
         self.log_completions = args.log_completions
+
+        if self.use_liger_loss:
+            if not is_liger_kernel_available():
+                raise ImportError(
+                    "Liger is required to use `liger_loss` as the GRPO loss. Run `pip install liger-kernel`."
+                )
+            if is_peft_model(model):
+                raise ValueError("Liger loss is not supported with a PEFT model.")
+
+            self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
+                beta=self.beta,
+                epsilon_low=self.epsilon_low,
+                epsilon_high=self.epsilon_high,
+                temperature=self.temperature,
+                use_ref_model=self.ref_model is not None,
+            )        
 
         super().__init__(
             model=model,
@@ -1158,10 +1180,72 @@ class GRPOTrainerV2(Trainer):
             "image_grid_thw": image_grid_thw,     
         }
 
+
+    @profiling_decorator
+    def _get_last_hidden_state(self, model, input_ids, attention_mask, 
+                               pixel_values=None, image_grid_thw=None,
+                               logits_to_keep=None):
+        # unwrap the model to access the model.model
+        unwrapped_model = self.accelerator.unwrap_model(model)
+        if pixel_values is None:
+            last_hidden_state = unwrapped_model.model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        else:
+            last_hidden_state = unwrapped_model.model(input_ids=input_ids, 
+                                                      attention_mask=attention_mask,
+                                                      pixel_values=pixel_values,
+                                                      image_grid_thw=image_grid_thw
+                                                     ).last_hidden_state
+        last_hidden_state = last_hidden_state[:, :-1, :]  # (B, L-1, H)
+        if logits_to_keep is not None:
+            last_hidden_state = last_hidden_state[:, -logits_to_keep:, :]  # (B, logits_to_keep, H)
+        return last_hidden_state
+
+
+    def compute_liger_loss(self, model, inputs):
+        # Compute the per-token log probabilities for the model
+        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+        pixel_values, image_grid_thw = inputs["pixel_values"], inputs["image_grid_thw"]
+        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+
+        # get the last hidden state of the model
+        last_hidden_state = self._get_last_hidden_state(model, input_ids, attention_mask, pixel_values, image_grid_thw, logits_to_keep)
+        unwrapped_model = self.accelerator.unwrap_model(model)
+        # compute loss and metrics using liger grpo loss
+        loss, metrics = self.liger_grpo_loss(
+            _input=last_hidden_state,
+            lin_weight=unwrapped_model.lm_head.weight,
+            selected_token_ids=completion_ids,
+            attention_mask=completion_mask,
+            advantages=inputs["advantages"],
+            bias=unwrapped_model.lm_head.bias,
+            ref_per_token_logps=inputs["ref_per_token_logps"],
+            old_per_token_logps=inputs["old_per_token_logps"],
+        )
+        # Extract metrics from the liger_grpo_loss output
+        # KL divergence is the first metric when beta is non-zero
+        mean_kl = metrics[0] if self.beta != 0.0 else None
+        clip_ratio = metrics[-1]
+
+        mode = "eval" if self.control.should_evaluate else "train"
+        if self.beta != 0.0:
+            self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+        self._metrics[mode]["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
+        return loss    
+
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
+        if self.use_liger_loss:
+            # Compute the loss using the liger grpo loss
+            return self.compute_liger_loss(model, inputs)
+        else:
+            return self._compute_loss(model, inputs)    
+
+    def _compute_loss(self, model, inputs):
         # Compute the per-token log probabilities for the model
 
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]

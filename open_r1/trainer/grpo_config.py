@@ -220,6 +220,10 @@ class GRPOConfig(TrainingArguments):
         default=None,
         metadata={"help": "Implementation of the cache method for faster generation when use_vllm is set to False."},
     )
+    use_liger_loss: bool = field(
+        default=False,
+        metadata={"help": "Whether to use the Liger GRPO loss."},
+    )
 
     # Parameters that control generation acceleration powered by vLLM
     use_vllm: bool = field(
