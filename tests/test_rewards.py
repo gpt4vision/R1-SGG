@@ -448,8 +448,8 @@ def scale_box(box, scale):
 def main(args):
     accelerator = Accelerator()
 
-    db = load_dataset(args.dataset_name)['train']
-    print("Load dataset:", args.dataset_name, " len:", len(db))
+    db = load_dataset(args.dataset)['train']
+    print("Load dataset:", args.dataset, " len:", len(db))
 
     rank = accelerator.process_index
     wsize = accelerator.num_processes
@@ -460,7 +460,7 @@ def main(args):
     print("Rank:", rank, " will process [%s, %s)"%(start_idx, end_idx))
 
     def replace_answer_format(item: str) -> str:
-        return item.replace("<answer>", "```").replace("</answer>", "```")
+        return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
         def __call__(self, examples):
@@ -517,8 +517,9 @@ def main(args):
     model, processor = get_model(args.model_name, device)
     sampling_params = SamplingParams(
         n=args.num_generations,
-        temperature=0.7,
+        temperature=1.0,
         top_p=0.9,
+        top_k=50,
         repetition_penalty=1.0,
         max_tokens=args.max_tokens,
     )
@@ -568,7 +569,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
-    parser.add_argument("--dataset_name", type=str, default="JosephZ/vg150_train_sgg_prompt")
+    parser.add_argument("--dataset", type=str, default="JosephZ/vg150_train_sgg_prompt")
     parser.add_argument("--output_name", type=str, default="JosephZ/vg150_train_sgg_prompt_subset_for_grpo")
     parser.add_argument("--num_generations", type=int, default=8)
     parser.add_argument("--max_tokens", type=int, default=2048)
