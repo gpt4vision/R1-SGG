@@ -129,15 +129,23 @@ def format_answer(objects:str, relationships:str, shuffle=False):
     return structured_answer
 
 
+def replace_answer_format(item: str) -> str:
+    return item.replace("<answer>", "```json").replace("</answer>", "```")
 
-def format_data(sample, shuffle=False):
+def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=True, shuffle=False):
     """Prepare dataset example for training."""
 
     image = sample["image"].convert('RGB')
     iw, ih = image.size
-    prompt = sample['prompt_open'] # close, or open
-    prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
+    if use_predefined_cats:
+        prompt = sample['prompt_close'] # w. pre-defined categories
+    else:
+        prompt = sample['prompt_open'] 
 
+    if remove_image_size_in_prompt:
+        prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
+
+    prompt = replace_answer_format(prompt)
 
     #normalize box to [0, 1000]
     objs = []
@@ -174,6 +182,9 @@ def main():
     # args
     parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    if not hasattr(training_args, "use_predefined_cats"):
+        print("*"*100, "training_args.use_predefined_cats set to False !")
+        training_args.use_predefined_cats = False
 
     # load dataset 
     train_dataset = load_dataset(script_args.dataset_name)['train']
@@ -182,7 +193,7 @@ def main():
     #val_dataset = split_db["test"]
     print(f"Training set size: {len(train_dataset)}")
     #print(f"Validation set size: {len(val_dataset)}")
-    print("Train set[0]:", format_data(train_dataset[0]))
+    print("Train set[0]:", format_data(train_dataset[0], use_predefined_cats=training_args.use_predefined_cats))
 
     
     # model config.
@@ -212,8 +223,9 @@ def main():
 
 
     class Collator(object):
-        def __init__(self, processor):
+        def __init__(self, processor, use_predefined_cats):
             self.processor = processor
+            self.use_predefined_cats = use_predefined_cats
             self._db = {}
 
         def __call__(self, examples):
@@ -224,7 +236,7 @@ def main():
                     self._db[str(example)] = 0
 
                 shuffle = (self._db[str(example)] > 0) & (random.random() > 0.5)
-                format_example = format_data(example, shuffle)['messages']
+                format_example = format_data(example, use_predefined_cats=self.use_predefined_cats, shuffle=shuffle)['messages']
                 self._db[str(example)] += 1
 
                 text = self.processor.apply_chat_template(format_example, tokenize=False)
@@ -277,7 +289,7 @@ def main():
         train_dataset=train_dataset, 
         eval_dataset=None, #val_dataset,
         processing_class=processor.tokenizer,
-        data_collator=Collator(processor),
+        data_collator=Collator(processor, training_args.use_predefined_cats),
         peft_config=get_peft_config(model_args),
     )
     trainer.train()
