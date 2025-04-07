@@ -164,7 +164,7 @@ def format_data(sample, shuffle=False):
 
     image = sample["image"].convert('RGB')
     iw, ih = image.size
-    prompt = sample['prompt_close'] # close, or open
+    prompt = sample['prompt_open'] # close, or open
     prompt = prompt.replace(f"of size ({iw} x {ih})", "")
 
 
@@ -181,7 +181,7 @@ def format_data(sample, shuffle=False):
     messages = [
         {
             "role": "system",
-            "content": [{"type": "text", "text": "You are a helpful and multimodal AI assistant."}],
+            "content": "You are a helpful and multimodal AI assistant."
         },
         {
             "role": "user",
