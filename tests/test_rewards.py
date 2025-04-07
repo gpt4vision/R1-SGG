@@ -2,8 +2,10 @@ import os
 import sys
 import re
 import json
+from datetime import datetime
 import argparse
 import torch
+from tqdm import tqdm
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 from accelerate import Accelerator
@@ -30,6 +32,7 @@ except OSError:
     download("en_core_web_md")
     nlp = spacy.load("en_core_web_md")
 
+DEBUG_MODE=False
 SEM_WEIGHT = 1.0
 IOU_WEIGHT = 2.0
 BOX_L1_WEIGHT = 5.0
@@ -414,12 +417,33 @@ def get_model(name, device_map="auto"):
             limit_mm_per_prompt={"image": 1},
             dtype='bfloat16',
             device=device_map,
-            max_model_len=8192,
+            max_model_len=4096,
         )
     else:
         raise Exception(f"Unknown model_id: {name}")
 
     return model, processor
+
+def resize_image(img, fix_length=512, resize=True, shortest_side=False):
+    if not resize:
+        return 1.0, img
+
+    width, height = img.size
+    if shortest_side:
+        ratio = fix_length / min(width, height)
+    else:
+        ratio = fix_length / max(width, height)
+
+    new_width = int(width * ratio)
+    new_height = int(height * ratio)
+    scale = (new_width / width, new_height / height)
+    return scale, img.resize((new_width, new_height))
+
+
+def scale_box(box, scale):
+    sw, sh = scale
+    assert len(box) == 4, " len(box) != 4 "
+    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
 
 def main(args):
     accelerator = Accelerator()
@@ -428,7 +452,7 @@ def main(args):
     print("Load dataset:", args.dataset_name, " len:", len(db))
 
     rank = accelerator.process_index
-    wsize = accelerate.num_processes
+    wsize = accelerator.num_processes
     chunk_size = (len(db) + wsize - 1) // wsize
     start_idx = rank * chunk_size
     end_idx = (rank+1) * chunk_size if rank != wsize - 1 else len(db)
@@ -456,7 +480,7 @@ def main(args):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image"},
+                            {"type": "image", "image": image},
                             {"type": "text",
                              "text": replace_answer_format(org_prompt)
                             }
@@ -492,45 +516,62 @@ def main(args):
     device = 'cuda:%s'% rank
     model, processor = get_model(args.model_name, device)
     sampling_params = SamplingParams(
-        temperature=0.01,
-        top_k=1,
-        top_p=0.001,
+        n=args.num_generations,
+        temperature=0.7,
+        top_p=0.9,
         repetition_penalty=1.0,
         max_tokens=args.max_tokens,
     )
 
-
     collate_fn = Collator()
 
     db_loader = DataLoader(db, batch_size=1, collate_fn=collate_fn)
+
+    dst = []
     for batch in tqdm(db_loader, desc="Progress at Rank=%s"%rank):
         llm_inputs = []
         sols = []
+        ids = []
         for item in batch:
-            sols.append(item["solution"])
+            for _ in range(args.num_generations):
+                ids.append(item["image_id"])
+                sols.append(item["solution"])
+
             item_prompt = item['prompt']
             prompt = processor.apply_chat_template(item_prompt, tokenize=False, add_generation_prompt=True)
             image_input = process_vision_info(item_prompt)[0]
             tmp = {"prompt": prompt, "multi_modal_data": {"image": image_input}}
             llm_inputs.append(tmp)
 
-         with torch.no_grad():
-            outputs = model.generate(llm_inputs, sampling_params=sampling_params)
-         output_texts = [output.outputs[0].text for output in outputs]
-         
-         
-        
 
+        with torch.no_grad():
+            outputs = model.generate(llm_inputs, sampling_params=sampling_params)
+
+        completions = [[{"content": item.text}] for output in outputs for item in output.outputs]
+
+        node_acc_list = np.array(node_acc_reward(completions, sols, ids))
+        node_box_list = np.array(node_box_reward(completions, sols, ids))
+        edge_list = np.array(edge_reward(completions, sols, ids))
+        format_list = np.array(format_reward(completions, ids))
+
+        rewards = node_acc_list + node_box_list + edge_list + format_list
+        reward_std = rewards.std()
+
+        dst.append({"image_id": ids[0], "reward_std": reward_std})
+
+    
+    with open("std_%s.json"% rank, "w") as fout:
+        json.dump(dst, fout)
 
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct", required=True)
-    parser.add_argument("--dataset_name", type=str, default="JosephZ/vg150_train_sgg_prompt", required=True)
-    parser.add_argument("--output_name", type=str, default="JosephZ/vg150_train_sgg_prompt_subset_for_grpo", required=True)
-    parser.add_argument("--num_generations", type=int, default=8, required=True)
-    parser.add_argument("--max_tokens", type=int, default=2048, required=True)
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
+    parser.add_argument("--dataset_name", type=str, default="JosephZ/vg150_train_sgg_prompt")
+    parser.add_argument("--output_name", type=str, default="JosephZ/vg150_train_sgg_prompt_subset_for_grpo")
+    parser.add_argument("--num_generations", type=int, default=8)
+    parser.add_argument("--max_tokens", type=int, default=2048)
    
 
     args = parser.parse_args()
