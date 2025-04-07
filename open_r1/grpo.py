@@ -480,8 +480,9 @@ def main(script_args, training_args, model_args):
         return item.replace("<answer>", "```").replace("</answer>", "```")
 
     class Collator(object):
-        def __init__(self, processor):
+        def __init__(self, processor, use_predefined_cats):
             self.processor = processor
+            self.use_predefined_cats = use_predefined_cats
 
         def __call__(self, examples):
             batch = []
@@ -491,9 +492,14 @@ def main(script_args, training_args, model_args):
                 box_scale, image = resize_image(image, 512, resize=True)
                 new_iw, new_ih = image.size
 
-                org_prompt = example['prompt_open']
+                if self.use_predefined_cats:
+                    org_prompt = example['prompt_close'] #w. predefined categories
+                else:
+                    org_prompt = example['prompt_open']
+
                 #org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", f"({new_iw} x {new_ih})")
-                org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", "") # not provide image size
+                org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
+                org_prompt = replace_answer_format(org_prompt)
 
                 prompt = [
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -502,7 +508,7 @@ def main(script_args, training_args, model_args):
                         "content": [
                             {"type": "image"},
                             {"type": "text", 
-                             "text": replace_answer_format(org_prompt)
+                             "text": org_prompt
                             }
                         ]
                     }
@@ -542,7 +548,11 @@ def main(script_args, training_args, model_args):
     processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
                     min_pixels=script_args.min_pixels,
                     max_pixels=script_args.max_pixels)
-    collator_instance = Collator(processor)
+
+    if not hasattr(training_args, "use_predefined_cats"):
+        training_args.use_predefined_cats = False
+
+    collator_instance = Collator(processor, training_args.use_predefined_cats)
 
     print("*" * 100)
     print(f"rank={rank}, world size={world_size}, len(dataset)={len(dataset)}, dataset[0]:", collator_instance([dataset[0]]))

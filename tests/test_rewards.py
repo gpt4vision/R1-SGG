@@ -473,7 +473,7 @@ def main(args):
 
                 org_prompt = example['prompt_open']
                 #org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", f"({new_iw} x {new_ih})")
-                org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", "") # not provide image size
+                org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
 
                 prompt = [
                     {"role": "system", "content": SYSTEM_PROMPT},
