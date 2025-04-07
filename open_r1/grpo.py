@@ -21,8 +21,8 @@ from typing import Optional
 from tqdm import tqdm
 
 import torch
-import torch._dynamo
-torch._dynamo.config.suppress_errors = True
+#import torch._dynamo
+#torch._dynamo.config.suppress_errors = True
 
 import numpy as np
 from datasets import load_dataset, load_from_disk
@@ -299,8 +299,8 @@ def node_box_reward(completions, solution, image_id, **kwargs):
                 match_objects.append(
                     f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                 )
-                reward += (compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']) * 0.5 + \
-                          np.exp(-box_L1(assign['groundtruth']['bbox'], pred_entry['bbox'])) * 0.5) * NODE_REWARD_WEIGHT
+                reward += (compute_iou(assign['groundtruth']['bbox'], pred_entry['bbox']) * IOU_WEIGHT + \
+                          np.exp(-box_L1(assign['groundtruth']['bbox'], pred_entry['bbox'])) * BOX_L1_WEIGHT) / (IOU_WEIGHT+BOX_L1_WEIGHT) * NODE_REWARD_WEIGHT
 
             reward /= len(gt_objs) if gt_objs else 1
         except Exception:
