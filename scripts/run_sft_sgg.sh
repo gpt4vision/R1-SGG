@@ -5,15 +5,14 @@
 #SBATCH --job-name=SFT_vg150_SGG
 #SBATCH --time=24:00:00
 
-## Using 16 nodes (each node has 8x4090 GPUs), adjust this if needed
+# 4x A100
 
-#SBATCH --nodes=16
-#SBATCH --ntasks=16
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=rtx_4090:8
+#SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=25000M
-#SBATCH --mail-user="zuychen@ethz.ch"
+
+#SBATCH --mail-user="zychen.uestc@gmail.com"
 #SBATCH --mail-type=ALL
 #SBATCH --output=job_%j_%N.out
 
@@ -32,32 +31,33 @@ export GPUS_PER_NODE=8
 export WANDB_PROJECT=RL4SGG
 
 
-# 16*8
+# batch size=4 * 2 * 16 = 128
 srun torchrun --nnodes ${SLURM_NNODES} \
     --nproc_per_node $GPUS_PER_NODE \
     --node_rank $NODE_RANK \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
     --rdzv_endpoint ${head_node_ip}:29500 \
-    sft_sgg.py \
-    --deepspeed configs/zero3.json \
+    src/sft_sgg.py \
     --model_name_or_path Qwen/Qwen2-VL-7B-Instruct \
     --dataset_name JosephZ/vg150_train_sgg_prompt \
-    --learning_rate 5e-5 \
-    --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps 1 \
+    --learning_rate 1e-5 \
+    --per_device_train_batch_size 2 \
+    --gradient_accumulation_steps 16 \
     --warmup_ratio 0.05 \
     --max_grad_norm 0.3 \
     --logging_steps 1 \
     --bf16 true\
     --tf32 true\
     --report_to wandb \
-    --gradient_checkpointing True \
     --attn_implementation flash_attention_2 \
     --num_train_epochs 3 \
-    --run_name Qwen2-VL-7B_vg150_sgg_b128_normal_e3 \
-    --save_steps 500 \
+    --run_name Qwen2-VL-7B_vg150_sgg_b128_open_e3 \
+    --save_steps 100 \
     --save_only_model true \
     --torch_dtype bfloat16 \
-    --output_dir models/qwen2vl-7b-sft-vg150-b128-normal-e3
+    --fsdp "full_shard auto_wrap" \
+    --fsdp_config local_scripts/fsdp_config.json \
+    --output_dir models/qwen2vl-7b-sft-vg150-b128-open-e3 \
+    --seed 42
 
