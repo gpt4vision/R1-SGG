@@ -12,6 +12,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=8
 
+#SBATCH --account=a-a03
 #SBATCH --mail-user="zychen.uestc@gmail.com"
 #SBATCH --mail-type=ALL
 #SBATCH --output=job_%j_%N.out
@@ -26,7 +27,7 @@ echo "Head Node IP: $head_node_ip"
 # Set NODE_RANK from SLURM environment variable
 export NODE_RANK=${SLURM_NODEID}
 
-export GPUS_PER_NODE=8
+export GPUS_PER_NODE=4
 
 export WANDB_PROJECT=RL4SGG
 

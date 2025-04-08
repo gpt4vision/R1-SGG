@@ -22,6 +22,7 @@ import random
 from tqdm import tqdm
 import torch
 import math
+from dataclasses import dataclass, field
 
 from accelerate import Accelerator
 from datasets import load_dataset
@@ -177,14 +178,21 @@ def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=T
     return {"messages": messages}
 
 
+
+@dataclass
+class CustomScriptArguments(ScriptArguments):
+    use_predefined_cats: bool = field(
+        default=False, 
+        metadata={"help": "Whether to use predefined object categories"}
+    )
+
+
+
 def main():
     accelerator = Accelerator()
     # args
-    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
+    parser = TrlParser((CustomScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
-    if not hasattr(training_args, "use_predefined_cats"):
-        print("*"*100, "training_args.use_predefined_cats set to False !")
-        training_args.use_predefined_cats = False
 
     # load dataset 
     train_dataset = load_dataset(script_args.dataset_name)['train']
@@ -193,7 +201,7 @@ def main():
     #val_dataset = split_db["test"]
     print(f"Training set size: {len(train_dataset)}")
     #print(f"Validation set size: {len(val_dataset)}")
-    print("Train set[0]:", format_data(train_dataset[0], use_predefined_cats=training_args.use_predefined_cats))
+    print("Train set[0]:", format_data(train_dataset[0], use_predefined_cats=script_args.use_predefined_cats))
 
     
     # model config.
@@ -289,7 +297,7 @@ def main():
         train_dataset=train_dataset, 
         eval_dataset=None, #val_dataset,
         processing_class=processor.tokenizer,
-        data_collator=Collator(processor, training_args.use_predefined_cats),
+        data_collator=Collator(processor, script_args.use_predefined_cats),
         peft_config=get_peft_config(model_args),
     )
     trainer.train()
