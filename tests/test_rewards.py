@@ -459,6 +459,8 @@ def main(args):
     db = db.select(range(start_idx, end_idx))
     print("Rank:", rank, " will process [%s, %s)"%(start_idx, end_idx))
 
+    device = 'cuda:%s'% accelerator.local_process_index
+
     def replace_answer_format(item: str) -> str:
         return item.replace("<answer>", "```json").replace("</answer>", "```")
 
@@ -513,8 +515,7 @@ def main(args):
             return batch    
 
     #
-    device = 'cuda:%s'% rank
-    model, processor = get_model(args.model_name, device)
+    model, processor = get_model(args.model_name, device_map=device)
     sampling_params = SamplingParams(
         n=args.num_generations,
         temperature=1.0,
