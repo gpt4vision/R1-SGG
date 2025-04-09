@@ -39,45 +39,9 @@ from trl import (
     get_peft_config,
     get_quantization_config,
 )
-try:
-    from liger_kernel.transformers import monkey_patch
-    _is_liger_kernel_available = True
-except:
-    _is_liger_kernel_available = False
 
 from qwen_vl_utils import process_vision_info
 
-def construct_model_and_processor(model_name: str, use_liger: bool, **model_kwargs) -> torch.nn.Module:
-    if "Qwen2-VL" in model_name:
-        min_visual_tokens_per_image = 4
-        max_visual_tokens_per_image = 1024
-
-        processor = AutoProcessor.from_pretrained(
-            model_name,
-            padding_side="left",
-            truncation_side="left",
-            min_pixels=min_visual_tokens_per_image * 28 * 28,  # patch size is 14x14
-            max_pixels=max_visual_tokens_per_image * 28 * 28,  # 4 patches / token
-        )
-        processor.tokenizer.pad_token = processor.tokenizer.eos_token
-        image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
-
-        if use_liger:
-            print("Applying Liger Kernel to Qwen2-VL model")
-            monkey_patch.apply_liger_kernel_to_qwen2_vl(
-                # These args can be used to override the default Liger settings
-                # cross_entropy=True,
-                # fused_linear_cross_entropy=False,
-            )
-            model_kwargs['use_cache'] = False
-
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            pretrained_model_name_or_path=model_name,
-            **model_kwargs
-        )
-        return model, processor, image_token_id
-
-    raise NotImplementedError(f"Model {model_name} not supported")
 
 
 
@@ -217,17 +181,13 @@ def main():
     )
     training_args.model_init_kwargs = model_kwargs
 
-    if training_args.use_liger and _is_liger_kernel_available:
-        model, processor, image_token_id = construct_model_and_processor(model_args.model_name_or_path, True, **model_kwargs)
-    else:
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path, **model_kwargs
-        )
-        min_pixels = 3136
-        max_pixels = 1024 * 28 * 28
-        processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
-                        min_pixels=min_pixels, max_pixels=max_pixels)
-
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        model_args.model_name_or_path, **model_kwargs
+    )
+    min_pixels = 3136
+    max_pixels = 1024 * 28 * 28
+    processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
+                    min_pixels=min_pixels, max_pixels=max_pixels)
 
 
     class Collator(object):

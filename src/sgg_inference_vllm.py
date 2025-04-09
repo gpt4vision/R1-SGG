@@ -30,50 +30,6 @@ SYSTEM_PROMPT = (
     "<think> reasoning process here </think><answer> answer here </answer>"
 )
 
-PROMPT2 = """Generate a structured scene graph for an image of size ({width} x {height}) using the following format:
-
-```json
-{{
-  "objects": [
-    {{"id": "object_name.number", "bbox": [x1, y1, x2, y2]}},
-    ...
-  ],
-  "relationships": [
-    "[subject] -> [relation type] -> [object]"
-    ...
-  ]
-}}
-```
-
-### **Guidelines:**
-- **Objects:**
-  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).
-  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.
-  - Include all visible objects, even if they have no relationships.
-
-- **Relationships:**
-  - Each relationship item should be a triplet: [subject] -> [predicate] -> [object].
-  - Use active voice (e.g., "person.1 -> riding -> bike.2" instead of "bike.2 -> ridden by -> person.1").
-  - Omit relationships for orphan objects.
-
-### **Example Output:**
-```json
-{{
-  "objects": [
-    {{"id": "person.1", "bbox": [120, 200, 350, 700]}},
-    {{"id": "bike.2", "bbox": [100, 600, 400, 800]}},
-    {{"id": "helmet.3", "bbox": [150, 150, 280, 240]}},
-    {{"id": "tree.4", "bbox": [500, 100, 750, 700]}}
-  ],
-  "relationships": [
-    "person.1 -> riding -> bike.2",
-    "person.1 -> wearing -> helmet.3",
-  ]
-}}
-```
-
-Now, generate the complete scene graph for the provided image:
-"""
 
 
 def get_model(name, device_map="auto"):
@@ -109,7 +65,6 @@ def format_data(sample):
     image = sample['image'].convert('RGB')
     iw, ih = image.size
     prompt = sample['prompt_open']
-    #prompt = PROMPT2.format(width=iw, height=ih)
 
     def replace_answer_format(item: str) -> str:
         return item.replace("<answer>", "```").replace("</answer>", "```")
