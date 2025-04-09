@@ -2,48 +2,24 @@
 
 
 
-#SBATCH --job-name=SFT_2B
-#SBATCH --time=24:00:00
 
-# 4x A100
+export TORCH_DISTRIBUTED_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=128
-
-#SBATCH --account=a-a03
-#SBATCH --mail-user="zychen.uestc@gmail.com"
-#SBATCH --mail-type=ALL
-#SBATCH --output=SFT-2B_%j_%N.out
-
-# Get node list and determine head node
-nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-head_node=${nodes[0]}
-head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
-
-echo "Head Node IP: $head_node_ip"
-
-# Set NODE_RANK from SLURM environment variable
-export NODE_RANK=${SLURM_NODEID}
 
 export GPUS_PER_NODE=4
-
 export WANDB_PROJECT=RL4SGG
 
 
 # batch size=4 * 2 * 16 = 128
-srun torchrun --nnodes ${SLURM_NNODES} \
+torchrun --nnodes 1 \
     --nproc_per_node $GPUS_PER_NODE \
-    --node_rank $NODE_RANK \
-    --rdzv_id $RANDOM \
-    --rdzv_backend c10d \
-    --rdzv_endpoint ${head_node_ip}:29500 \
+    --node_rank 0 \
     src/sft_sgg.py \
     --model_name_or_path Qwen/Qwen2-VL-2B-Instruct \
     --dataset_name JosephZ/vg150_train_sgg_prompt \
     --learning_rate 1e-5 \
-    --per_device_train_batch_size 8\
+    --per_device_train_batch_size 1\
     --gradient_accumulation_steps 4\
     --warmup_ratio 0.05 \
     --max_grad_norm 0.3 \
