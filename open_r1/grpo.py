@@ -79,6 +79,10 @@ class GRPOScriptArguments(ScriptArguments):
         default=3136,
         metadata={"help": "Minimum number of pixels for the image"},
     )
+    use_predefined_cats: bool = field(
+        default=False, 
+        metadata={"help": "Whether to use predefined object categories"}
+    )
 
 
 def extract_answer_content(text: str) -> str:
@@ -469,6 +473,8 @@ def scale_box(box, scale):
     return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
 
 
+
+
 def main(script_args, training_args, model_args):
     script_args.reward_funcs = ['format', 'node_acc_reward', "node_box_reward",  "edge_reward"]
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
@@ -477,7 +483,7 @@ def main(script_args, training_args, model_args):
     print("len(dataset):", len(dataset))
 
     def replace_answer_format(item: str) -> str:
-        return item.replace("<answer>", "```").replace("</answer>", "```")
+        return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
         def __init__(self, processor, use_predefined_cats):
@@ -549,10 +555,8 @@ def main(script_args, training_args, model_args):
                     min_pixels=script_args.min_pixels,
                     max_pixels=script_args.max_pixels)
 
-    if not hasattr(training_args, "use_predefined_cats"):
-        training_args.use_predefined_cats = False
 
-    collator_instance = Collator(processor, training_args.use_predefined_cats)
+    collator_instance = Collator(processor, script_args.use_predefined_cats)
 
     print("*" * 100)
     print(f"rank={rank}, world size={world_size}, len(dataset)={len(dataset)}, dataset[0]:", collator_instance([dataset[0]]))
