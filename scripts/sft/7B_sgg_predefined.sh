@@ -15,7 +15,7 @@
 #SBATCH --account=a-a03
 #SBATCH --mail-user="zychen.uestc@gmail.com"
 #SBATCH --mail-type=ALL
-#SBATCH --output=job_%j_%N.out
+#SBATCH --output=SFT-7B-close_%j_%N.out
 
 # Get node list and determine head node
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )

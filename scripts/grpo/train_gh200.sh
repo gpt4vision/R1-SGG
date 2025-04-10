@@ -41,7 +41,7 @@ NUM_TRAIN_NODES=${#NODELIST[@]}
 TRAIN_NODES_LIST=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 
 # Choose the first training node as the rendezvous head node
-HEAD_NODE=${TRAIN_NODES[0]}
+HEAD_NODE=${TRAIN_NODES_LIST[0]}
 HEAD_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
 echo "Head Node IP: $HEAD_NODE_IP"
 
