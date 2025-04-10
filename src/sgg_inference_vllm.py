@@ -33,11 +33,14 @@ SYSTEM_PROMPT = (
 
 
 def get_model(name, device_map="auto", max_model_len=4096):
-    if "qwen2vl-7b" in name or "Qwen2-VL-7B" in name or "qwen2vl" in name: # hack
+    is_qwen2vl = 'qwen2vl' in name.lower()
+
+    if is_qwen2vl:
         print("Using model:", name)
         min_pixels = 4*28*28
         max_pixels = 1024*28*28
-        processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", 
+        base_model_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2-VL-2B-Instruct"
+        processor = AutoProcessor.from_pretrained(base_model_name, 
                                         min_pixels=min_pixels, max_pixels=max_pixels)
 
         try:
