@@ -16,7 +16,7 @@ NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name !
 
 
 class MyDataset(object):
-    def __init__(self, db, keep_ids):
+    def __init__(self, db):
         self._coco = None
         
         self.ind_to_classes = VG150_OBJ_CATEGORIES
@@ -110,9 +110,7 @@ if __name__ == "__main__":
 
     preds = json.load(open(sys.argv[1]))
     db = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
-    keep_ids = preds.keys()
-
-    dataset = MyDataset(db, keep_ids)
+    dataset = MyDataset(db)
 
     sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), num_workers=4)
 

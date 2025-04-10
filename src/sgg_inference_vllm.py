@@ -32,7 +32,7 @@ SYSTEM_PROMPT = (
 
 
 
-def get_model(name, device_map="auto"):
+def get_model(name, device_map="auto", max_model_len=4096):
     if "qwen2vl-7b" in name or "Qwen2-VL-7B" in name or "qwen2vl" in name: # hack
         print("Using model:", name)
         min_pixels = 4*28*28
@@ -49,10 +49,10 @@ def get_model(name, device_map="auto"):
 
         model = LLM(
             model=name, 
-            limit_mm_per_prompt={"image": 2},
+            limit_mm_per_prompt={"image": 1},
             dtype='bfloat16',
             device=device_map,
-            max_model_len=8192,
+            max_model_len=max_model_len,
         )
     else:
         raise Exception(f"Unknown model_id: {name}")
@@ -60,27 +60,34 @@ def get_model(name, device_map="auto"):
     return model, processor 
 
 
+def replace_answer_format(item: str) -> str:
+    return item.replace("<answer>", "```").replace("</answer>", "```")
 
-def format_data(sample):
+def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False, remove_image_size_in_prompt=True):
     image = sample['image'].convert('RGB')
     iw, ih = image.size
-    prompt = sample['prompt_open']
+    if use_predefined_cats:
+        prompt = sample['prompt_close']
+    else:
+        prompt = sample['prompt_open']
 
-    def replace_answer_format(item: str) -> str:
-        return item.replace("<answer>", "```").replace("</answer>", "```")
+    if remove_image_size_in_prompt:
+        prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
 
+    prompt = replace_answer_format(prompt)
+
+
+    system_prompt = SYSTEM_PROMPT if use_think_system_prompt else "You are a helpful and multimodal AI assistant."
     messages = [
         {
             "role": "system",
-            #"content": [{"type": "text", "text": "You are a helpful and multimodal AI assistant."}],
-            "content": SYSTEM_PROMPT
+            "content": system_prompt
         },
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
-                {"type": "text", "text": replace_answer_format(prompt)
-                },
+                {"type": "text", "text": prompt},
             ],
         },
     ]
@@ -89,8 +96,11 @@ def format_data(sample):
 def parse_args():
     parser = argparse.ArgumentParser(description="Run model inference on a dataset.")
     parser.add_argument("--dataset", required=True, help="Hugging Face dataset identifier")
-    parser.add_argument("--model_name", required=True, help="Model name to load")
+    parser.add_argument("--model", required=True, help="Model name to load")
     parser.add_argument("--output_dir", required=True, help="Directory to save the outputs")
+    parser.add_argument("--use_think_system_prompt", type=bool, default=False, help="Whether to use the system prompt with <think>...</think>")
+    parser.add_argument("--use_predefined_cats", type=bool, default=False, help="Whether to use predefined categories in the prompt")
+    parser.add_argument("--max_model_len", type=int, default=4096, help="max_model_len for vLLM")
 
     return parser.parse_args()
 
@@ -110,7 +120,7 @@ def main():
 
 
     # Load the model and processor.
-    model, processor = get_model(args.model_name, device_map=device)
+    model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
     sampling_params = SamplingParams(
         temperature=0.01,
         top_k=1,
@@ -119,11 +129,13 @@ def main():
         max_tokens=2048,
     )
 
-    print(f"model_id: {args.model_name}", " generation_config:", sampling_params)
+    print(f"model_id: {args.model}", " generation_config:", sampling_params)
 
     class Collator(object):
-        def __init__(self, processor):
+        def __init__(self, processor, use_predefined_cats, use_think_system_prompt):
             self.processor = processor
+            self.use_predefined_cats = use_predefined_cats
+            self.use_think_system_prompt = use_think_system_prompt
 
         def __call__(self, examples):
             ids = [e['image_id'] for e in examples]
@@ -132,7 +144,9 @@ def main():
     
             llm_inputs = []
             for example in examples:
-                format_example = format_data(example)['messages']
+                format_example = format_data(example, 
+                                             use_predefined_cats=self.use_predefined_cats, 
+                                             use_think_system_prompt=self.use_think_system_prompt)['messages']
                 prompt = self.processor.apply_chat_template(format_example,
                                 tokenize=False, add_generation_prompt=True)
 
@@ -168,12 +182,14 @@ def main():
     subset = dataset.select(range(start_idx, end_idx))  # Select subset for this GPU
     print("*"*100, "\n rank:", rank, " world size:", world_size,
             "subset from", start_idx, " to ", end_idx, "\n", 
-            "\n data[0]:", format_data(dataset[0]),
+            "\n data[0]:", format_data(dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
             "*"*100)
 
     data_loader = DataLoader(subset, batch_size=2, 
                              shuffle=False, 
-                             collate_fn=Collator(processor),
+                             collate_fn=Collator(processor, 
+                                                 use_predefined_cats=args.use_predefined_cats, 
+                                                 use_think_system_prompt=args.use_think_system_prompt),
                              pin_memory=True
                             )
     #data_loader = accelerator.prepare(data_loader)
