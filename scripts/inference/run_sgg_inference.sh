@@ -28,7 +28,7 @@ fi
 
 echo "ARGS:$ARGS"
 
-srun torchrun --nnodes 1 \
+torchrun --nnodes 1 \
   --nproc_per_node $GPUS_PER_NODE \
   --node_rank 0 \
   src/sgg_inference_vllm.py -- $ARGS
