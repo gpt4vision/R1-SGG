@@ -33,7 +33,7 @@ SYSTEM_PROMPT = (
 
 
 def get_model(name, device_map="auto", max_model_len=4096):
-    is_qwen2vl = 'qwen2vl' in name.lower()
+    is_qwen2vl = 'qwen2vl' in name.lower() or 'qwen2-vl' in name.lower()
 
     if is_qwen2vl:
         print("Using model:", name)
