@@ -57,16 +57,16 @@ with Zero3, you can train 7B model on 24GB GPUs but the training speed is slow a
 ## Inference
 - To test models trained with SFT, 
 ```
-sbatch scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR
+bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR
 ```
 If the model trained with predefined categories (i.e., with "--use_predefined_cats"), add the third parameter to the script
 ```
-sbatch scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR true
+bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR true
 ```
 
 - To test models trained with GRPO,
 ```
-sbatch scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR false/true  true
+bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR false/true  true
 ```
 
 then, run the evaluation via

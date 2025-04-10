@@ -2,41 +2,7 @@
 
 
 
-#SBATCH --job-name=7b-eval
-#SBATCH --time=24:00:00
-
-## Using 2 nodes (each node has 8x4090 GPUs)
-
-#GPU types:
-# - a100-pcie-40gb
-# - a100_80gb
-# - rtx_4090
-# - rtx_3090
-
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=rtx_4090:8
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=25000M
-#SBATCH --output=%j_%N.out
-#SBATCH --mail-user="zychen.uestc@gmail.com" 
-#SBATCH --mail-type=ALL
-
-# Get node list and determine head node
-nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-head_node=${nodes[0]}
-head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
-
-echo "Head Node IP: $head_node_ip"
-
-# Set NODE_RANK from SLURM environment variable
-export NODE_RANK=${SLURM_NODEID}
-export GPUS_PER_NODE=8
-
-
-
-
+export GPUS_PER_NODE=4
 
 
 MODEL_NAME=$1
@@ -62,10 +28,7 @@ fi
 
 echo "ARGS:$ARGS"
 
-srun torchrun --nnodes ${SLURM_NNODES} \
+srun torchrun --nnodes 1 \
   --nproc_per_node $GPUS_PER_NODE \
-  --node_rank $NODE_RANK \
-  --rdzv_id $RANDOM \
-  --rdzv_backend c10d \
-  --rdzv_endpoint ${head_node_ip}:29500 \
+  --node_rank 0 \
   src/sgg_inference_vllm.py -- $ARGS
