@@ -35,4 +35,30 @@ bash scripts/sft_loca/7B_sgg.sh
 
 
 ## Training with GRPO
+For A100 GPUs,
+```
+sbatch scripts/grpo/train_a100.sh
+```
+
+For GH200 GPUs,
+```
+sbatch scripts/grpo/train_gh200.sh
+```
+
+with these large-memory GPUs (> 80GB), we allocate one vLLM server at each training process to reduce the communication latency.
+
+
+If you have lots of GPUs like RTX_3090/RTX_4090, you can use 
+```
+sbatch scripts/grpo/train_fused.sh
+```
+with Zero3, you can train 7B model on 24GB GPUs but the training speed is slow as the communication is the bottleneck.
+
+
+## Acknowledgement
+The GRPOTrainer used in this project is based on trl's [GRPOTrainer](https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py),
+and we extend it to support multimodal inputs.
+
+## Citation
+
 
