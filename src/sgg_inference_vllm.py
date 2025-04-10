@@ -101,6 +101,7 @@ def parse_args():
     parser.add_argument("--use_think_system_prompt", action="store_true", help="Use system prompt with <think>...</think>")
     parser.add_argument("--use_predefined_cats", action="store_true", help="Use predefined categories in the prompt")
     parser.add_argument("--max_model_len", type=int, default=4096, help="max_model_len for vLLM")
+    parser.add_argument("--batch_size", type=int, default=1, help="batch size")
 
     return parser.parse_args()
 
@@ -185,7 +186,9 @@ def main():
             "\n data[0]:", format_data(dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
             "*"*100)
 
-    data_loader = DataLoader(subset, batch_size=1, 
+    data_loader = DataLoader(
+                             subset, 
+                             batch_size=args.batch_size, 
                              shuffle=False, 
                              collate_fn=Collator(processor, 
                                                  use_predefined_cats=args.use_predefined_cats, 
@@ -235,4 +238,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -44,10 +44,13 @@ OUTPUT_DIR=$2
 USE_CATS=$3     # true/false
 PROMPT_TYPE=$4  # true/false
 
+BATCH_SIZE=1
+
 echo "MODEL_NAME: $MODEL_NAME, OUTPUT_DIR: $OUTPUT_DIR"
 echo "USE_CATS: $USE_CATS, PROMPT_TYPE: $PROMPT_TYPE"
 
-ARGS="--dataset JosephZ/vg150_val_sgg_prompt --model $MODEL_NAME --output_dir $OUTPUT_DIR --max_model_len 4096"
+ARGS="--dataset JosephZ/vg150_val_sgg_prompt --model $MODEL_NAME --output_dir $OUTPUT_DIR --max_model_len 4096 --batch_size $BATCH_SIZE"
+
 
 if [ "$PROMPT_TYPE" == "true" ]; then
   ARGS="$ARGS --use_think_system_prompt"
@@ -56,6 +59,8 @@ fi
 if [ "$USE_CATS" == "true" ]; then
   ARGS="$ARGS --use_predefined_cats"
 fi
+
+echo "ARGS:$ARGS"
 
 srun torchrun --nnodes ${SLURM_NNODES} \
   --nproc_per_node $GPUS_PER_NODE \
