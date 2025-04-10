@@ -185,7 +185,7 @@ def main():
             "\n data[0]:", format_data(dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
             "*"*100)
 
-    data_loader = DataLoader(subset, batch_size=2, 
+    data_loader = DataLoader(subset, batch_size=1, 
                              shuffle=False, 
                              collate_fn=Collator(processor, 
                                                  use_predefined_cats=args.use_predefined_cats, 
