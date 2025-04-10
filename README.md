@@ -54,6 +54,30 @@ sbatch scripts/grpo/train_fused.sh
 ```
 with Zero3, you can train 7B model on 24GB GPUs but the training speed is slow as the communication is the bottleneck.
 
+## Inference
+- To test models trained with SFT, 
+```
+sbatch scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR
+```
+If the model trained with predefined categories (i.e., with "--use_predefined_cats"), add the third parameter to the script
+```
+sbatch scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR true
+```
+
+- To test models trained with GRPO,
+```
+sbatch scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR false/true  true
+```
+
+then, run the evaluation via
+```
+python src/sgg_gather_preds.py $OUTPUT_DIR sgg_pred_results.json
+python src/vg150_eval.py sgg_pred_results.json
+```
+
+
+
+
 
 ## Acknowledgement
 The GRPOTrainer used in this project is based on trl's [GRPOTrainer](https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py),
