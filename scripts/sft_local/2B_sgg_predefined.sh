@@ -16,8 +16,8 @@ torchrun --nnodes 1 \
     --model_name_or_path Qwen/Qwen2-VL-2B-Instruct \
     --dataset_name JosephZ/vg150_train_sgg_prompt \
     --learning_rate 1e-5 \
-    --per_device_train_batch_size 8\
-    --gradient_accumulation_steps 4\
+    --per_device_train_batch_size 4\
+    --gradient_accumulation_steps 8\
     --warmup_ratio 0.05 \
     --max_grad_norm 0.3 \
     --logging_steps 1 \
