@@ -109,7 +109,7 @@ class SggEvaluator(object):
 
         self.useCats = useCats
         self.multiple_preds = multiple_preds
-        self.zeroshot_triplet = torch.load(os.path.join('./utils/',
+        self.zeroshot_triplet = torch.load(os.path.join('src/utils/',
                             "zeroshot_triplet.pytorch"),
                             map_location=torch.device("cpu")).long().numpy() if "relation" in iou_types else None
 
