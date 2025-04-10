@@ -15,7 +15,6 @@
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
-export HF_HOME=$SCRATCH/huggingface
 # ---------- Environment Setup ----------
 export NCCL_ASYNC_ERROR_HANDLING=1
 export DEBUG_MODE=True
