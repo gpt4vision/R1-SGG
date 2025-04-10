@@ -372,7 +372,7 @@ def main():
 
     rel_cats = list(set(rel_cats))
     print("rel_cats:", len(rel_cats), rel_cats)
-    with open("sgg_preds_result.json", 'w') as fout:
+    with open(sys.argv[2], 'w') as fout:
         json.dump(preds_dict, fout)
 
 if __name__ == "__main__":

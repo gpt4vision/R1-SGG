@@ -4,12 +4,14 @@
 #SBATCH --job-name=GRPO_train_GH200
 #SBATCH --time=12:00:00
 
-#SBATCH --nodes=4  # 4 nodes, each has 4x GH200                   
-#SBATCH --ntasks=4                   # Total tasks equals total nodes
+#SBATCH --nodes=2  # 2 nodes, each has 4x GH200                   
+#SBATCH --ntasks=2                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=288 # fixed for GH200
 
+#SBATCH --account=a-a03
+#SBATCH --partition=normal
 #SBATCH --output=RL_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
@@ -51,7 +53,7 @@ echo "Head Node IP: $HEAD_NODE_IP"
 # bsz_per_devie=8, 386s for 30 steps, ~60h with 3x GPUs
 # bsz_per_devie=16, ~40h with 4x GPUs
 #
-#  batch size: 16*4*4//8=32
+#  batch size: 16*2*4* 2 //8=32
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
     --model_name_or_path ${MODEL_PATH} \
@@ -60,7 +62,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --max_completion_length 1024 \
     --per_device_train_batch_size 16 \
     --deepspeed ./local_scripts/zero2.json \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps 2 \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\
