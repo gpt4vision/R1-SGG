@@ -98,8 +98,8 @@ def parse_args():
     parser.add_argument("--dataset", required=True, help="Hugging Face dataset identifier")
     parser.add_argument("--model", required=True, help="Model name to load")
     parser.add_argument("--output_dir", required=True, help="Directory to save the outputs")
-    parser.add_argument("--use_think_system_prompt", type=bool, default=False, help="Whether to use the system prompt with <think>...</think>")
-    parser.add_argument("--use_predefined_cats", type=bool, default=False, help="Whether to use predefined categories in the prompt")
+    parser.add_argument("--use_think_system_prompt", action="store_true", help="Use system prompt with <think>...</think>")
+    parser.add_argument("--use_predefined_cats", action="store_true", help="Use predefined categories in the prompt")
     parser.add_argument("--max_model_len", type=int, default=4096, help="max_model_len for vLLM")
 
     return parser.parse_args()
