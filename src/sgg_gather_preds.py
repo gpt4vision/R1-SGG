@@ -230,14 +230,14 @@ def main():
         db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
         db = {e['image_id']: e for e in tqdm(db_raw, desc="Loading dataset")}
 
-    pass2act = json.load(open("pass2act.json"))
+    pass2act = json.load(open("src/pass2act.json"))
     pass2act = {e['source']: e for e in pass2act}
 
     fails = [0, 0]
     preds_dict = {}
     cats = []
     # Load the pre-existing synonym mapping
-    with open('synonym_mapping.json', 'r') as f:
+    with open('src/synonym_mapping.json', 'r') as f:
         map_db = json.load(f)
     map_db_rel = {}
     rel_cats = []
