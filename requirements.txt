@@ -19,3 +19,7 @@ fastapi
 openai==1.65.5
 vllm==0.7.3
 wandb==0.18.3
+pycocotools
+tabulate
+nltk
+matplotlib

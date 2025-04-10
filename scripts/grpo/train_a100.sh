@@ -41,8 +41,11 @@ TRAIN_NODES_LIST=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 
 # Choose the first training node as the rendezvous head node
 HEAD_NODE=${TRAIN_NODES_LIST[0]}
-HEAD_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
-echo "Head Node IP: $HEAD_NODE_IP"
+
+#MASTER_ADDR=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
+
+MASTER_ADDR=$(echo "${SLURM_NODELIST}" | sed 's/[],].*//g; s/\[//g')
+echo "MASTER_ADDR: $MASTER_ADDR"
 
 
 
@@ -87,5 +90,5 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --node_rank ${SLURM_NODEID} \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
-    --rdzv_endpoint ${HEAD_NODE_IP}:${MASTER_PORT} \
+    --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
     ${TRAIN_CMD}

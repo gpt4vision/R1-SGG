@@ -367,7 +367,8 @@ def main():
         #visualize_assignments(image, pred_objs, gt_objs, assignments, f"rl-vis/{im_id}.jpg", pred_rels, gt_rels)
 
     cats = list(set(cats))
-    print("fails:", fails, fails[0]/fails[1]*100.0)
+    print("fails:", fails)
+    print("failure rate:", fails[0]/fails[1]*100.0)
     print("Number of valid predictions:", len(preds_dict))
 
     rel_cats = list(set(rel_cats))
