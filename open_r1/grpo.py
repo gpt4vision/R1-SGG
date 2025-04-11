@@ -395,14 +395,14 @@ def format_reward(completions, image_id, **kwargs):
     - Must contain <think>...</think> and <answer>...</answer>
     - The <answer> content must be a valid JSON dict with keys "objects" and "relationships"
     """
-    pattern = r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$"
+    pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
 
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
     for completion, im_id in zip(completions, image_id):
         content = completion[0]["content"]
-        match = re.match(pattern, content, re.DOTALL | re.MULTILINE)
+        match = re.fullmatch(pattern, content, re.DOTALL)
         reward = 0.0
         if not match:
             rewards.append(0.0)
