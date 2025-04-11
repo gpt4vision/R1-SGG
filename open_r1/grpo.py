@@ -419,9 +419,8 @@ def format_reward(completions, image_id, **kwargs):
                         obj_valid = False
                 
                 reward = 1.0 if obj_valid else 0.0
-                rewards.append(reward)
-            else:
-                rewards.append(0.0)
+            
+            rewards.append(reward)
         except Exception:
             rewards.append(0.0)
 
@@ -435,7 +434,7 @@ def format_reward(completions, image_id, **kwargs):
 
 # Reward functions registry
 reward_funcs_registry = {
-    "format": format_reward,
+    "format_reward": format_reward,
     "node_acc_reward": node_acc_reward,
     "node_box_reward": node_box_reward,
     "edge_reward": edge_reward,
@@ -476,7 +475,7 @@ def scale_box(box, scale):
 
 
 def main(script_args, training_args, model_args):
-    script_args.reward_funcs = ['format', 'node_acc_reward', "node_box_reward",  "edge_reward"]
+    script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
