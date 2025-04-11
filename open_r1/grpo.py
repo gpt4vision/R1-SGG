@@ -395,13 +395,14 @@ def format_reward(completions, image_id, **kwargs):
     - Must contain <think>...</think> and <answer>...</answer>
     - The <answer> content must be a valid JSON dict with keys "objects" and "relationships"
     """
-    pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
+    pattern = r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$"
+
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
     for completion, im_id in zip(completions, image_id):
         content = completion[0]["content"]
-        match = re.fullmatch(pattern, content, re.DOTALL)
+        match = re.match(pattern, content, re.DOTALL | re.MULTILINE)
         reward = 0.0
         if not match:
             rewards.append(0.0)
@@ -419,9 +420,8 @@ def format_reward(completions, image_id, **kwargs):
                         obj_valid = False
                 
                 reward = 1.0 if obj_valid else 0.0
-                rewards.append(reward)
-            else:
-                rewards.append(0.0)
+            
+            rewards.append(reward)
         except Exception:
             rewards.append(0.0)
 
@@ -435,7 +435,7 @@ def format_reward(completions, image_id, **kwargs):
 
 # Reward functions registry
 reward_funcs_registry = {
-    "format": format_reward,
+    "format_reward": format_reward,
     "node_acc_reward": node_acc_reward,
     "node_box_reward": node_box_reward,
     "edge_reward": edge_reward,
@@ -476,7 +476,7 @@ def scale_box(box, scale):
 
 
 def main(script_args, training_args, model_args):
-    script_args.reward_funcs = ['format', 'node_acc_reward', "node_box_reward",  "edge_reward"]
+    script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
