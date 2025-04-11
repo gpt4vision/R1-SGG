@@ -532,7 +532,7 @@ class GRPOTrainerV2(Trainer):
                                               model_name=model if isinstance(model, str) else model.config._name_or_path, 
                                               max_model_len=args.vllm_max_model_len,
                                               gpu_memory_utilization=args.vllm_gpu_memory_utilization,
-                                              device='cuda:%s'%self.accelerator.process_index
+                                              device='cuda:%s'%self.accelerator.local_process_index
                                              )
             else:
                 vllm_server_hosts = args.vllm_server_host 
