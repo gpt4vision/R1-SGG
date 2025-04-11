@@ -79,7 +79,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --beta 0.0\
     --vllm_max_model_len 4096 \
     --vllm_gpu_memory_utilization 0.25\
-    --save_only_model true"
+    --save_only_model false"
 
     
 echo "start training..."
