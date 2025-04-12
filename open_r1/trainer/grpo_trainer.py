@@ -31,6 +31,7 @@ import warnings
 from collections import defaultdict
 from contextlib import nullcontext
 from typing import Any, Callable, Optional, Sized, Union
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 from torch.utils.data import DataLoader
@@ -910,7 +911,7 @@ class GRPOTrainerV2(Trainer):
                         llm_inputs.append(json.dumps(prompt_item))
 
         else:
-            raise Exception("TODO:")
+            llm_inputs = [json.dumps(item["prompt"]) for item in inputs]
 
 
         # Generate completions using either vLLM or regular generation
