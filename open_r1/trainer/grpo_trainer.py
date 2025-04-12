@@ -453,6 +453,8 @@ class GRPOTrainerV2(Trainer):
         # Buffer the batch to reuse generated outputs across multiple updates. For more details, see
         # `_get_train_sampler` and `_prepare_inputs`.
         self._buffered_inputs = [None] * args.gradient_accumulation_steps
+        self._buffered_completions = None
+        self._buffered_raw_inputs = None
 
         # The trainer estimates the number of FLOPs (floating-point operations) using the number of elements in the
         # input tensor associated with the key "input_ids". However, in GRPO, the sampled data does not include the
@@ -482,6 +484,9 @@ class GRPOTrainerV2(Trainer):
                 temperature=self.temperature,
                 use_ref_model=self.ref_model is not None,
             )        
+        
+        assert args.custom_per_device_train_batch_size > 0, "please set custom_per_device_train_batch_size > 0!"
+        args.per_device_train_batch_size = args.custom_per_device_train_batch_size * args.gradient_accumulation_steps # trick: we just gather all inputs one time for accumulation
 
         super().__init__(
             model=model,
@@ -496,11 +501,11 @@ class GRPOTrainerV2(Trainer):
 
         # Check if the per_device_train/eval_batch_size * num processes can be divided by the number of generations
         num_processes = self.accelerator.num_processes
-        global_batch_size = args.per_device_train_batch_size * num_processes
+        global_batch_size = args.custom_per_device_train_batch_size * num_processes
         possible_values = [n_gen for n_gen in range(2, global_batch_size + 1) if (global_batch_size) % n_gen == 0]
         if self.num_generations not in possible_values:
             raise ValueError(
-                f"The global train batch size ({num_processes} x {args.per_device_train_batch_size}) must be evenly "
+                f"The global train batch size ({num_processes} x {args.custom_per_device_train_batch_size}) must be evenly "
                 f"divisible by the number of generations per prompt ({self.num_generations}). Given the current train "
                 f"batch size, the valid values for the number of generations are: {possible_values}."
             )
@@ -640,7 +645,10 @@ class GRPOTrainerV2(Trainer):
         #                                     |     GPU 0     |     GPU 1     |     GPU 2    |
         #
         #               global_step   step     <───────>  num_generations=3
-        #                                      <───────────> per_device_train_batch_size=4
+        #                                      <-----------> custom_per_device_train_batch_size=4
+        #                                      <───────────> per_device_train_batch_size=custom_per_device_train_batch_size * gradient_accumulation_steps
+        #
+        #                                      |0 0 0 1 1 1 ... 11 11 11| will repeat gradient_accumulation_steps * num_iterations times
         #                ▲   0          0      0   0   0   1   1   1   2   2   2   3   3   3  │
         #  grad_accum=3  │   0          1      4   4   4   5   5   5   6   6   6   7   7   7  │ Generate completions for each prompt
         #                ▼   0          2      8   8   8   9   9   9  10  10  10  11  11  11  │
@@ -656,7 +664,7 @@ class GRPOTrainerV2(Trainer):
         effective_batch_size = (
             self.args.per_device_train_batch_size
             * self.accelerator.num_processes
-            * self.args.custom_gradient_accumulation_steps
+            * self.args.gradient_accumulation_steps
         )
         return RepeatRandomSampler(
             data_source=self.train_dataset,
@@ -827,12 +835,27 @@ class GRPOTrainerV2(Trainer):
     def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
         mode = "eval" if self.control.should_evaluate else "train"
         if mode == "train":
+            accumulate_local_step = self._step % self.args.gradient_accumulation_steps
+
             if self.state.global_step % self.num_iterations == 0:
-                completion_ids = self._generate_completions(inputs)
+                if self._step % (self.num_iterations * self.args.gradient_accumulation_steps) == 0: #only sampling when gradient accumulation + sample replay finished
+                    self._buffered_completions = self._generate_completions(inputs)
+                    self._buffered_raw_inputs = gather_object(inputs)
+
+                global_batch_size = self.args.custom_per_device_train_batch_size * self.accelerator.num_processes
+                start_idx = accumulate_local_step * global_batch_size
+                end_idx = (accumulate_local_step+1) * global_batch_size
+
+                completion_ids = self._buffered_completions[start_idx : end_idx]
+                inputs = self._buffered_raw_inputs[start_idx: end_idx]
+                inputs = inputs[self.accelerator.process_index* self.args.custom_per_device_train_batch_size:
+                                (self.accelerator.process_index+1)*self.args.custom_per_device_train_batch_size]
+
                 inputs = self._score_completions(inputs, completion_ids)
-                self._buffered_inputs[self._step % self.args.gradient_accumulation_steps] = inputs
+                self._buffered_inputs[accumulate_local_step] = inputs
             else:
-                inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
+                inputs = self._buffered_inputs[accumulate_local_step]
+
             self._step += 1
         else:
             # In evaluation, we don't reuse completions across multiple updates, so we don't need to buffer inputs.

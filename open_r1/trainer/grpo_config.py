@@ -224,7 +224,10 @@ class GRPOConfig(TrainingArguments):
         default=False,
         metadata={"help": "Whether to use the Liger GRPO loss."},
     )
-
+    custom_per_device_train_batch_size: int = field(
+        default=-1, 
+        metadata={"help": "customized per_device_train_batch_size"}
+    )
     custom_gradient_accumulation_steps: int = field(
         default=1,
         metadata={"help": "customized gradient accumulation steps"}
