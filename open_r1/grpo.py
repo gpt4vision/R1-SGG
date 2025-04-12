@@ -551,7 +551,15 @@ def main(script_args, training_args, model_args):
         rank = 0
         world_size = 1
 
-    processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
+    if model_args.model_name_or_path not in ["Qwen/Qwen2-VL-7B-Instruct", "Qwen/Qwen2-VL-2B-Instruct"]:
+        if '7b' in model_args.model_name_or_path.lower():
+            base_name = "Qwen/Qwen2-VL-7B-Instruct"
+        else:
+            base_name = "Qwen/Qwen2-VL-2B-Instruct"
+    else:
+        base_name = model_args.model_name_or_path
+
+    processor = Qwen2VLProcessor.from_pretrained(base_name, 
                     min_pixels=script_args.min_pixels,
                     max_pixels=script_args.max_pixels)
 
@@ -593,7 +601,8 @@ def main(script_args, training_args, model_args):
         peft_config=get_peft_config(model_args),
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
-        data_collator=collator_instance
+        data_collator=collator_instance,
+        processing_class=processor
     )
 
     #trainer.train(resume_from_checkpoint=True)
