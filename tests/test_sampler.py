@@ -1,7 +1,14 @@
 import torch
 from typing import Optional
 
+from transformers import Trainer, TrainingArguments
+
 from torch.utils.data import Sampler
+from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
+
+BATCH_PER_DEVICE=2
+GRAD_ACC=3
+# 2*4*3 // 8 = 3
 
 class RepeatRandomSampler(Sampler):
     """
@@ -53,7 +60,7 @@ class RepeatRandomSampler(Sampler):
 
     def __init__(
         self,
-        data_source: Sized,
+        data_source ,
         mini_repeat_count: int,
         batch_size: int = 1,
         repeat_count: int = 1,
@@ -91,13 +98,11 @@ class RepeatRandomSampler(Sampler):
         return self.num_samples * self.mini_repeat_count * self.repeat_count
 
 
-BATCH_PER_DEVICE=2
-GRAD_ACC=16
 
 
 
 # Dummy dataset
-class DummyDataset(Dataset):
+class DummyDataset(torch.utils.data.Dataset):
     def __init__(self, size=100):
         self.data = list(range(size))
 
@@ -120,9 +125,6 @@ class DummyModel(torch.nn.Module):
         outputs = self.linear(input_ids.float())
         return {"logits": outputs}
 
-# Custom Trainer
-BATCH_PER_DEVICE = 2
-GRAD_ACC = 16
 
 class MyTrainer(Trainer):
     def _get_train_sampler(self):
@@ -131,25 +133,25 @@ class MyTrainer(Trainer):
         return RepeatRandomSampler(
             data_source=self.train_dataset,
             mini_repeat_count=8,
-            batch_size=effective_batch_size // 8,
-            repeat_count=1,
+            batch_size=effective_batch_size//8,
+            repeat_count=1*GRAD_ACC,
             seed=self.args.seed,
         )
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        # Extract labels as needed
-        labels = inputs.pop("labels", None)
-        print("global_step:", self.state.global_step, "labels:", labels)
+        input_ids = inputs['input_ids']
+        labels = inputs['labels']
+        all_labels = self.accelerator.gather(labels)
+
+        rank = self.accelerator.process_index 
+        if rank == 0:
+            print("rank:", self.accelerator.process_index, "global_step:", self.state.global_step, "labels:", all_labels.tolist(), "\n")
 
         # Forward pass
-        outputs = model(**inputs)
+        outputs = model(input_ids)
 
-        # Custom logic for loss
-        if labels is not None:
-            logits = outputs.get("logits", outputs[0])
-            loss = torch.nn.functional.mse_loss(logits, labels.float())
-        else:
-            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        logits = outputs['logits']
+        loss = torch.nn.functional.mse_loss(logits, labels.float())
 
         if return_outputs:
             return loss, outputs
@@ -157,12 +159,11 @@ class MyTrainer(Trainer):
 
 # Run dummy training
 if __name__ == "__main__":
-    dataset = DummyDataset(size=200)
+    dataset = DummyDataset(size=300)
     model = DummyModel()
 
     training_args = TrainingArguments(
-        output_dir="./dummy_output",
-        per_device_train_batch_size=BATCH_PER_DEVICE,
+        per_device_train_batch_size=BATCH_PER_DEVICE*GRAD_ACC,
         gradient_accumulation_steps=GRAD_ACC,
         num_train_epochs=1,
         logging_steps=1,
@@ -170,6 +171,7 @@ if __name__ == "__main__":
         logging_dir="./logs",
         disable_tqdm=False,
         seed=42,
+        report_to=None
     )
 
     trainer = MyTrainer(
