@@ -361,7 +361,10 @@ class GRPOConfig(TrainingArguments):
             "installed, it prints the sample. If `wandb` logging is enabled, it logs it to `wandb`."
         },
     )
-
+    vllm_log_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "log_file of vllm servers"}
+    )
     # Deprecated parameters
     vllm_device: Optional[str] = field(
         default=None,

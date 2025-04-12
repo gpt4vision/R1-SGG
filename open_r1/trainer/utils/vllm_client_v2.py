@@ -78,8 +78,21 @@ class VLLMClient:
         enable_prefix_caching: Optional[bool] = None,
         max_model_len: int = 4096,
         limit_mm_per_prompt: int = 1,
-        device: str="auto"
+        device: str="auto",
+        log_file: Optional[str]=None,
     ):
+        self.log_file = log_file
+        # Set up the file logging redirection if log_file is provided.
+        if self.log_file:
+            file_handler = logging.FileHandler(self.log_file)
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            file_handler.setFormatter(formatter)
+            file_handler.setLevel(logging.INFO)
+            logger.addHandler(file_handler)
+            # Optionally, if you wish to disable propagation to avoid duplicate logs,
+            # uncomment the next line:
+            # logger.propagate = False
+
         self.local_vllm = local_vllm
         self.llm = None
         self.disable_weight_sync = disable_weight_sync
