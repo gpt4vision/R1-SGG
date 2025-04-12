@@ -891,31 +891,38 @@ class GRPOTrainerV2(Trainer):
         profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext()
         profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext()
 
+        # prepare data for vLLM servers
         llm_inputs = []
-
-        if self.is_qwen2vl:
-            if self.use_vllm: # prepare data for vLLM servers
+        if self.use_vllm:  # prepare data for vLLM servers
+            if self.is_qwen2vl:
+                def prepare_vllm_input(example):
+                    base64_image = encode_image_to_base64(example['image'])
+                    new_image = {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                    }
+                
+                    prompt_item = example['prompt']
+                    for idx, item in enumerate(prompt_item):
+                        if item['role'] == 'user':
+                            if item['content'][0]['type'] != 'image':
+                                raise ValueError("user's content[0] != {type: image}")
+                            item['content'][0] = new_image
+                            prompt_item[idx] = item
+                
+                    return json.dumps(prompt_item)
+                
                 with profiling_llm_inputs_prepare:
-                    for example in inputs:
-                        assert is_pil_image(example['image']), "image is not PIL.Image!"
-
-                        prompt_item = example['prompt']
-                        base64_image = encode_image_to_base64(example['image'])
-                        new_image = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                        for idx, item in enumerate(prompt_item):
-                            if item['role'] == 'user':
-                                assert item['content'][0]['type'] == 'image', "user's content[0] != {type: image}"
-                                item['content'][0] = new_image
-                                prompt_item[idx] = item 
-
-                        llm_inputs.append(json.dumps(prompt_item))
-
-        else:
-            llm_inputs = [json.dumps(item["prompt"]) for item in inputs]
+                    with ThreadPoolExecutor() as executor:
+                        llm_inputs = list(executor.map(prepare_vllm_input, inputs))
+            else:
+                with profiling_llm_inputs_prepare:
+                    with ThreadPoolExecutor() as executor:
+                        llm_inputs = list(executor.map(lambda x: json.dumps(x["prompt"]), inputs))            
 
 
         # Generate completions using either vLLM or regular generation
-        if self.args.use_vllm:
+        if self.use_vllm:
             # First, have main process load weights if needed
             if self.state.global_step != self._last_loaded_step:
                 self._move_model_to_vllm()
