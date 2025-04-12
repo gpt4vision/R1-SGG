@@ -71,7 +71,7 @@ from trl.extras.profiling import profiling_context, profiling_decorator
 from .utils.vllm_client_v2 import VLLMClient
 
 from transformers.utils import is_liger_kernel_available
-from trl.import_utils import is_deepspeed_available, is_rich_available, is_vllm_available
+from trl.import_utils import is_deepspeed_available, is_rich_available, is_vllm_available, is_datasets_available()
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.callbacks import SyncRefModelCallback
 #from trl.trainer.grpo_config import GRPOConfig
@@ -643,7 +643,7 @@ class GRPOTrainerV2(Trainer):
 
         train_dataset = self.train_dataset
         data_collator = self.data_collator
-        if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
+        if is_datasets_available() and isinstance(train_dataset, Dataset):
             train_dataset = self._remove_unused_columns(train_dataset, description="training")
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
