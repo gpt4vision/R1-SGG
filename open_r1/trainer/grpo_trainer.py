@@ -487,7 +487,7 @@ class GRPOTrainerV2(Trainer):
             )        
         
         assert args.custom_per_device_train_batch_size > 0, "please set custom_per_device_train_batch_size > 0!"
-        args.per_device_eval_batch_size = args.custom_per_device_train_batch_size * args.gradient_accumulation_steps
+        args.per_device_train_batch_size = args.custom_per_device_train_batch_size * args.gradient_accumulation_steps
 
         super().__init__(
             model=model,
