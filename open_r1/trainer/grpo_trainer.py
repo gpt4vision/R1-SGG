@@ -656,7 +656,7 @@ class GRPOTrainerV2(Trainer):
         effective_batch_size = (
             self.args.per_device_train_batch_size
             * self.accelerator.num_processes
-            * self.args.gradient_accumulation_steps
+            * self.args.custom_gradient_accumulation_steps
         )
         return RepeatRandomSampler(
             data_source=self.train_dataset,
@@ -829,7 +829,7 @@ class GRPOTrainerV2(Trainer):
         if mode == "train":
             if self.state.global_step % self.num_iterations == 0:
                 completion_ids = self._generate_completions(inputs)
-                inputs = self._score_completions(inputs, completions)
+                inputs = self._score_completions(inputs, completion_ids)
                 self._buffered_inputs[self._step % self.args.gradient_accumulation_steps] = inputs
             else:
                 inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]

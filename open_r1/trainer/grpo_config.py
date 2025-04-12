@@ -225,6 +225,10 @@ class GRPOConfig(TrainingArguments):
         metadata={"help": "Whether to use the Liger GRPO loss."},
     )
 
+    custom_gradient_accumulation_steps: int = field(
+        default=1,
+        metadata={"help": "customized gradient accumulation steps"}
+    )
     # Parameters that control generation acceleration powered by vLLM
     use_vllm: bool = field(
         default=False,
