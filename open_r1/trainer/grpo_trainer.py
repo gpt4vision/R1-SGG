@@ -828,44 +828,47 @@ class GRPOTrainerV2(Trainer):
         mode = "eval" if self.control.should_evaluate else "train"
         if mode == "train":
             if self.state.global_step % self.num_iterations == 0:
-                inputs = self._generate_and_score_completions(inputs)
+                completion_ids = self._generate_completions(inputs)
+                inputs = self._score_completions(inputs, completions)
                 self._buffered_inputs[self._step % self.args.gradient_accumulation_steps] = inputs
             else:
                 inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
             self._step += 1
         else:
             # In evaluation, we don't reuse completions across multiple updates, so we don't need to buffer inputs.
-            inputs = self._generate_and_score_completions(inputs)
+            completion_ids = self._generate_completions(inputs)
+            inputs = self._score_completions(inputs, completion_ids)
+
         return inputs
 
-    def _generate_and_score_completions(
-        self, inputs: dict[str, Union[torch.Tensor, Any]]
-    ) -> dict[str, Union[torch.Tensor, Any]]:
-        device = self.accelerator.device
-        # 
-        llm_inputs = []
+
+    def _generate_completions(self, inputs: dict[str, Union[torch.Tensor, Any]]):
+        """
+            base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
+            messages = [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": "You are a helpful and multimodal AI assistant."}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image",}
+                        {"type": "text", "text": text_prompt},
+                    ],
+                }
+                ]
+            example={"prompt": messages, "image": image}
+        or:
+            example = {"prompt": [{"role": "user", "content": "What color is the sky?"}]}
+        """
         profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext()
         profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext()
         profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext()
 
+        llm_inputs = []
+
         if self.is_qwen2vl:
-            """
-                base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
-                messages = [
-                    {
-                        "role": "system",
-                        "content": [{"type": "text", "text": "You are a helpful and multimodal AI assistant."}],
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image",}
-                            {"type": "text", "text": text_prompt},
-                        ],
-                    }
-                    ]
-                example={"prompt": messages, "image": image}
-            """
             if self.use_vllm: # prepare data for vLLM servers
                 with profiling_llm_inputs_prepare:
                     for example in inputs:
@@ -882,37 +885,9 @@ class GRPOTrainerV2(Trainer):
 
                         llm_inputs.append(json.dumps(prompt_item))
 
-            with profiling_processor:
-                prompts = [x["prompt"] for x in inputs]
-                prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-                images = [x["image"] for x in inputs]
-                prompt_inputs = self.processing_class(
-                    text=prompts_text, images=images, 
-                    return_tensors="pt", padding=True,
-                    padding_side="left", add_special_tokens=False,
-                )
-                prompt_inputs = super()._prepare_inputs(prompt_inputs)
-
-                prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-                pixel_values = prompt_inputs["pixel_values"]
-                image_grid_thw = prompt_inputs["image_grid_thw"]            
         else:
-            """
-                example = {"prompt": [{"role": "user", "content": "What color is the sky?"}]}
-            """
-            prompts = [x["prompt"] for x in inputs]
-            prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-            prompt_inputs = self.processing_class(
-                text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
-            )
-            prompt_inputs = super()._prepare_inputs(prompt_inputs)
-            prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-            pixel_values, image_grid_thw = None, None
+            raise Exception("TODO:")
 
-        # truncate TODO: dangerous for qwen2vl
-        if self.max_prompt_length is not None:
-            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
         # Generate completions using either vLLM or regular generation
         if self.args.use_vllm:
@@ -922,10 +897,7 @@ class GRPOTrainerV2(Trainer):
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
-            if self.is_qwen2vl:
-                all_prompts_text = gather_object(llm_inputs)
-            else:
-                all_prompts_text = gather_object(prompts_text)
+            all_prompts_text = gather_object(llm_inputs)
 
             ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
             if self.use_local_vllm:
@@ -981,10 +953,8 @@ class GRPOTrainerV2(Trainer):
                 (self.accelerator.process_index + 1) * len(prompts),
             )
             completion_ids = completion_ids[process_slice]
-            # Pad the completions, and concatenate them with the prompts
-            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
-            prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+
+            return completion_ids
         else:
             # Regular generation path
             with unwrap_model_for_generation(
@@ -998,11 +968,58 @@ class GRPOTrainerV2(Trainer):
                     prompt_completion_ids = unwrapped_model.generate(
                         prompt_ids, attention_mask=prompt_mask, generation_config=self.generation_config
                     )
+            return prompt_completion_ids
 
+
+    def _score_completions(
+        self, inputs: dict[str, Union[torch.Tensor, Any]],
+        completion_ids: List[str, Union[torch.Tensor, Any]]
+    ) -> dict[str, Union[torch.Tensor, Any]]:
+        device = self.accelerator.device
+        # 
+        if self.is_qwen2vl:
+            with profiling_processor:
+                prompts = [x["prompt"] for x in inputs]
+                prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+                images = [x["image"] for x in inputs]
+                prompt_inputs = self.processing_class(
+                    text=prompts_text, images=images, 
+                    return_tensors="pt", padding=True,
+                    padding_side="left", add_special_tokens=False,
+                )
+                prompt_inputs = super()._prepare_inputs(prompt_inputs)
+
+                prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+                pixel_values = prompt_inputs["pixel_values"]
+                image_grid_thw = prompt_inputs["image_grid_thw"]            
+        else:
+            prompts = [x["prompt"] for x in inputs]
+            prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+            prompt_inputs = self.processing_class(
+                text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+            )
+            prompt_inputs = super()._prepare_inputs(prompt_inputs)
+            prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+            pixel_values, image_grid_thw = None, None
+
+
+        # truncate TODO: dangerous for qwen2vl
+        if self.max_prompt_length is not None:
+            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+
+        if self.use_vllm:
+            # Pad the completions, and concatenate them with the prompts
+            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
+            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
+            prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        else:
             # Compute prompt length and extract completion ids
             prompt_length = prompt_ids.size(1)
+            prompt_completion_ids = completion_ids
             prompt_ids = prompt_completion_ids[:, :prompt_length]
-            completion_ids = prompt_completion_ids[:, prompt_length:]
+            completion_ids = prompt_completion_ids[:, prompt_length:]            
+
 
         # Mask everything after the first EOS token
         is_eos = completion_ids == self.processing_class.eos_token_id
@@ -1142,31 +1159,6 @@ class GRPOTrainerV2(Trainer):
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
 
-        if self.log_completions and self.state.global_step % self.args.logging_steps == 0:
-            prompts_to_log = gather_object(prompts_text)
-            completions_to_log = gather_object(completions_text)
-            rewards_to_log = rewards.tolist()
-
-            if self.accelerator.is_main_process:
-                if is_rich_available():
-                    print_prompt_completions_sample(
-                        prompts_to_log,
-                        completions_to_log,
-                        rewards_to_log,
-                        self.state.global_step,
-                    )
-                if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
-                    import pandas as pd
-
-                    # For logging
-                    table = {
-                        "step": [str(self.state.global_step)] * len(rewards),
-                        "prompt": prompts_to_log,
-                        "completion": completions_to_log,
-                        "reward": rewards.tolist(),
-                    }
-                    df = pd.DataFrame(table)
-                    wandb.log({"completions": wandb.Table(dataframe=df)})
 
         return {
             "prompt_ids": prompt_ids,
