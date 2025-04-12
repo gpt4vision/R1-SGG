@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import glob
+import torch
 from tqdm import tqdm
 import re
 
@@ -242,10 +243,12 @@ def main():
     map_db_rel = {}
     rel_cats = []
 
+    all_im_ids = []
     for kk, item in enumerate(tqdm(preds, desc="Processing images")):
         #if kk > 10: break
 
         im_id = item['image_id']
+        all_im_ids.append(im_id)
         image = db[im_id]['image']
         if is_qwen2vl:
             iw, ih = image.size
@@ -370,6 +373,16 @@ def main():
     print("fails:", fails)
     print("failure rate:", fails[0]/fails[1]*100.0)
     print("Number of valid predictions:", len(preds_dict))
+    for im_id in all_im_ids:
+        pred_objs_dict = {"image_id": im_id, "boxes": torch.randn(1, 4).tolist(), "labels": [0], "scores": [0], "names": ["unknown"]}
+        if im_id not in preds_dict:
+            preds_dict[im_id] = pred_objs_dict
+            preds_dict[im_id]['graph'] = {'all_node_pairs': torch.zeros(1, 2).long().tolist(),
+                                          'all_relation': torch.zeros(1, 51).tolist(),
+                                          'pred_boxes': pred_objs_dict['boxes'],
+                                          'pred_boxes_class': pred_objs_dict['labels'],
+                                          'pred_boxes_score': pred_objs_dict['scores']}
+
 
     rel_cats = list(set(rel_cats))
     print("rel_cats:", len(rel_cats), rel_cats)
