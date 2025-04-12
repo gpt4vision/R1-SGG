@@ -30,7 +30,7 @@ import textwrap
 import warnings
 from collections import defaultdict
 from contextlib import nullcontext
-from typing import Any, Callable, Optional, Sized, Union
+from typing import Any, Callable, Optional, Sized, Union, List
 
 import torch
 import torch.utils.data
