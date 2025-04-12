@@ -20,7 +20,7 @@ export WANDB_PROJECT=RL4SGG
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1"
+RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-4090"
 OUTPUT_DIR="models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -63,7 +63,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --deepspeed ./local_scripts/zero3.json \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
-    --per_device_train_batch_size 1 \
+    --custom_per_device_train_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --logging_steps 1 \
     --use_vllm true \
