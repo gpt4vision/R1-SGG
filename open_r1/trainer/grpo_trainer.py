@@ -662,7 +662,7 @@ class GRPOTrainerV2(Trainer):
         #                    2          8     20  20  20  21  21  21  22  22  22  23  23  23
         #                                          ...
         effective_batch_size = (
-            self.args.per_device_train_batch_size
+            self.args.custom_per_device_train_batch_size
             * self.accelerator.num_processes
             * self.args.gradient_accumulation_steps
         )
