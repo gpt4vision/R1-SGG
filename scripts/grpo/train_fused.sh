@@ -76,15 +76,16 @@ TRAIN_CMD="open_r1/grpo.py \
     --report_to wandb \
     --gradient_checkpointing true \
     --max_pixels ${MAX_PIXELS} \
-    --temperature 0.3 \
-    --top_p 0.001 \
-    --top_k 1 \
+    --temperature 1 \
+    --top_p 0.9 \
+    --top_k 50 \
     --num_train_epochs 1 \
     --run_name ${RUN_NAME} \
     --save_steps 100 \
     --num_generations 8 \
     --num_iterations 1 \
-    --beta 0.0"
+    --beta 0.0 \
+    --seed 42"
 
 # ---------- Functions ----------
 launch_mixed_node() {
