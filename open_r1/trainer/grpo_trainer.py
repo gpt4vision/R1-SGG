@@ -28,6 +28,7 @@ import os
 import json
 import textwrap
 import warnings
+from functools import partial
 from collections import defaultdict
 from contextlib import nullcontext
 from typing import Any, Callable, Optional, Sized, Union
@@ -896,7 +897,7 @@ class GRPOTrainerV2(Trainer):
         llm_inputs = []
         if self.use_vllm:  # prepare data for vLLM servers
             if self.is_qwen2vl:
-                def prepare_vllm_input(example):
+                def prepare_vllm_input(example, use_local_vllm):
                     base64_image = encode_image_to_base64(example['image'])
                     new_image = {
                         "type": "image_url",
@@ -911,15 +912,17 @@ class GRPOTrainerV2(Trainer):
                             item['content'][0] = new_image
                             prompt_item[idx] = item
                 
-                    return json.dumps(prompt_item)
+                    return json.dumps(prompt_item) if not use_local_vllm else prompt_item
                 
                 with profiling_llm_inputs_prepare:
                     with ThreadPoolExecutor() as executor:
-                        llm_inputs = list(executor.map(prepare_vllm_input, inputs))
+                        prepare_fn = partial(prepare_vllm_input, use_local_vllm=self.use_local_vllm)
+                        llm_inputs = list(executor.map(prepare_fn, inputs))
             else:
                 with profiling_llm_inputs_prepare:
                     with ThreadPoolExecutor() as executor:
-                        llm_inputs = list(executor.map(lambda x: json.dumps(x["prompt"]), inputs))            
+                        llm_inputs = list(executor.map(lambda x: json.dumps(x["prompt"]) if not self.use_local_vllm else x['prompt'], 
+                                                       inputs))            
 
 
         # Generate completions using either vLLM or regular generation

@@ -244,7 +244,7 @@ class VLLMClient:
                 guided_decoding=guided_decoding,
             )
             # Use vLLM's chat interface
-            all_outputs = self.llm.chat([json.loads(item) for item in prompts], sampling_params=sampling_params)
+            all_outputs = self.llm.chat(prompts, sampling_params=sampling_params)
             results = [list(output.token_ids) for outputs in all_outputs for output in outputs.outputs]
             
             return results
