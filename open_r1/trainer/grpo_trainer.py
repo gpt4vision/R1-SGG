@@ -948,11 +948,6 @@ class GRPOTrainerV2(Trainer):
                 # corresponding slice.
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
 
-            process_slice = slice(
-                self.accelerator.process_index * len(prompts),
-                (self.accelerator.process_index + 1) * len(prompts),
-            )
-            completion_ids = completion_ids[process_slice]
 
             return completion_ids
         else:
@@ -1009,6 +1004,11 @@ class GRPOTrainerV2(Trainer):
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
         if self.use_vllm:
+            process_slice = slice(
+                self.accelerator.process_index * len(prompts),
+                (self.accelerator.process_index + 1) * len(prompts),
+            )
+            completion_ids = completion_ids[process_slice]
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
             completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
