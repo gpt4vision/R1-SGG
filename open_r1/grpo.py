@@ -563,6 +563,9 @@ def main(script_args, training_args, model_args):
                     min_pixels=script_args.min_pixels,
                     max_pixels=script_args.max_pixels)
 
+    pad_token_id = processor.tokenizer.pad_token_id
+    processor.pad_token_id = pad_token_id
+    processor.eos_token_id = processor.tokenizer.eos_token_id
 
     collator_instance = Collator(processor, script_args.use_predefined_cats)
 
