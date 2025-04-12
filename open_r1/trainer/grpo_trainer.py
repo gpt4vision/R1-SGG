@@ -863,7 +863,6 @@ class GRPOTrainerV2(Trainer):
             example = {"prompt": [{"role": "user", "content": "What color is the sky?"}]}
         """
         profiling_llm_inputs_prepare=profiling_context(self, "llm_inputs_prepare") if self.accelerator.is_main_process else nullcontext()
-        profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext()
         profiling_generate = profiling_context(self, "vLLM.generate") if self.accelerator.is_main_process else nullcontext()
 
         llm_inputs = []
@@ -967,6 +966,7 @@ class GRPOTrainerV2(Trainer):
 
 
     def _score_completions(self, inputs, completion_ids):
+        profiling_processor = profiling_context(self, "processor_prepare") if self.accelerator.is_main_process else nullcontext()
         device = self.accelerator.device
         # 
         if self.is_qwen2vl:
