@@ -30,7 +30,7 @@ import textwrap
 import warnings
 from collections import defaultdict
 from contextlib import nullcontext
-from typing import Any, Callable, Optional, Sized, Union, List
+from typing import Any, Callable, Optional, Sized, Union
 
 import torch
 import torch.utils.data
@@ -842,7 +842,7 @@ class GRPOTrainerV2(Trainer):
         return inputs
 
 
-    def _generate_completions(self, inputs: dict[str, Union[torch.Tensor, Any]]):
+    def _generate_completions(self, inputs):
         """
             base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
             messages = [
@@ -966,10 +966,7 @@ class GRPOTrainerV2(Trainer):
             return prompt_completion_ids
 
 
-    def _score_completions(
-        self, inputs: dict[str, Union[torch.Tensor, Any]],
-        completion_ids: List[str, Union[torch.Tensor, Any]]
-    ) -> dict[str, Union[torch.Tensor, Any]]:
+    def _score_completions(self, inputs, completion_ids):
         device = self.accelerator.device
         # 
         if self.is_qwen2vl:
