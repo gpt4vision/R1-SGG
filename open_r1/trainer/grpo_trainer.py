@@ -843,19 +843,16 @@ class GRPOTrainerV2(Trainer):
                 if self._step % (self.num_iterations * self.args.gradient_accumulation_steps) == 0: #only sampling when gradient accumulation + sample replay finished
                     self._buffered_completions = self._generate_completions(inputs)
                     self._buffered_raw_inputs = gather_object(inputs)
-                    print(f"debug 1 -- _step={self._step}, _buffered_completions:{len(self._buffered_completions)}, len(local_inputs)={len(inputs)}, len(all_inputs)={len(self._buffered_raw_inputs)}")
 
                 global_batch_size = self.args.custom_per_device_train_batch_size * self.accelerator.num_processes
                 start_idx = accumulate_local_step * global_batch_size
                 end_idx = (accumulate_local_step+1) * global_batch_size
-                print(f"debug 2 -- _step={self._step}, global_batch_size={global_batch_size}, start_idx={start_idx}, end_idx={end_idx}")
 
                 completion_ids = self._buffered_completions[start_idx : end_idx]
                 inputs = self._buffered_raw_inputs[start_idx: end_idx]
                 inputs = inputs[self.accelerator.process_index* self.args.custom_per_device_train_batch_size:
                                 (self.accelerator.process_index+1)*self.args.custom_per_device_train_batch_size]
 
-                print(f"debug 3 -- _step={self._step}, local_inputs={len(inputs)}, local_ids={len(completion_ids)}")
                 inputs = self._score_completions(inputs, completion_ids)
                 self._buffered_inputs[accumulate_local_step] = inputs
             else:
