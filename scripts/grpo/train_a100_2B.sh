@@ -29,6 +29,8 @@ RUN_NAME="qwen2vl-2b-grpo-g${GROUP_SIZE}-n1-bs32-A100-SXM4"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
+export LOG_PATH=${OUTPUT_DIR}/debug.log
+
 MAX_PIXELS=$((512 * 28 * 28))
 
 

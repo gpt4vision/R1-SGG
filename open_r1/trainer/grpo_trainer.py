@@ -492,6 +492,10 @@ class GRPOTrainerV2(Trainer):
         
         assert args.custom_per_device_train_batch_size > 0, "please set custom_per_device_train_batch_size > 0!"
         args.per_device_train_batch_size = args.custom_per_device_train_batch_size * args.gradient_accumulation_steps
+        # for data filtering
+        assert args.keep_top_group_ratio > 0 and args.keep_top_group_ratio <= 1, "args.keep_top_group_ratio must be (0, 1]"
+        if args.keep_top_group_ratio < 1:
+            args.per_device_train_batch_size = int(args.per_device_train_batch_size / args.keep_top_group_ratio)
 
         super().__init__(
             model=model,
@@ -840,6 +844,71 @@ class GRPOTrainerV2(Trainer):
         if self.vllm_client is not None:
             self.vllm_client.reset_prefix_cache()
 
+
+    def _sample_filtering(self, inputs, completions):
+        prompts = [x["prompt"] for x in inputs]
+
+        rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=self.accelerator.device)
+        for i, (reward_func, reward_processing_class) in enumerate(
+            zip(self.reward_funcs, self.reward_processing_classes)
+        ):
+            if isinstance(reward_func, nn.Module):  # Module instead of PretrainedModel for compat with compiled models
+                reward_func_name = f"reward {reward_func.config._name_or_path.split('/')[-1]}"
+            else:
+                reward_func_name = reward_func.__name__
+            with profiling_context(self, reward_func_name):
+                if isinstance(
+                    reward_func, nn.Module
+                ):  # Module instead of PretrainedModel for compat with compiled models
+                    if is_conversational(inputs[0]):
+                        messages = [{"messages": p + c} for p, c in zip(prompts, completions)]
+                        texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
+                    else:
+                        texts = [p + c for p, c in zip(prompts, completions)]
+                    reward_inputs = reward_processing_class(
+                        text=texts, return_tensors="pt", padding=True, padding_side="right", add_special_tokens=False
+                    )
+                    reward_inputs = super()._prepare_inputs(reward_inputs)
+                    with torch.inference_mode():
+                        rewards_per_func[:, i] = reward_func(**reward_inputs).logits[:, 0]  # Shape (B*G,)
+                else:
+                    # Repeat all input columns (but "prompt" and "completion") to match the number of generations
+                    keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
+                    reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
+                    output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
+                    # Convert None values to NaN
+                    output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
+
+                    rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+
+        # If all reward functions return None for a given row, issue a detailed warning
+        if torch.isnan(rewards_per_func).all(dim=1).any():
+            nan_row_idx = torch.isnan(rewards_per_func).all(dim=1).nonzero(as_tuple=True)[0][0]
+            row_reward_kwargs = {key: value[nan_row_idx] for key, value in reward_kwargs.items()}
+            row_reward_kwargs["prompt"] = prompts[nan_row_idx]
+            row_reward_kwargs["completion"] = completions[nan_row_idx]
+            warnings.warn(
+                f"All reward functions returned None for the following kwargs: {row_reward_kwargs}. "
+                "Please ensure that at least one reward function returns a valid reward."
+            )                
+        rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+
+        # Compute grouped-wise rewards
+        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
+        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+
+        # select top-k groups 
+        total_batch_size = self.args.custom_per_device_train_batch_size * self.accelerator.num_processes * self.args.gradient_accumulation_steps // self.num_generations
+        select_group = std_grouped_rewards.topk(total_batch_size).indices
+        select_group = select_group[torch.randperm(len(select_group), device=device)]
+        selected_indices = torch.cat([self.num_generations * idx + torch.arange(self.num_generations, device=device) for idx in select_group]).tolist()
+        inputs = [inputs[i] for i in selected_indices]
+        completions = [completions[i] for i in selected_indices]
+
+        return inputs, completions
+               
+
+
     @profiling_decorator
     def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
         mode = "eval" if self.control.should_evaluate else "train"
@@ -848,8 +917,11 @@ class GRPOTrainerV2(Trainer):
 
             if self.state.global_step % self.num_iterations == 0:
                 if self._step % (self.num_iterations * self.args.gradient_accumulation_steps) == 0: #only sampling when gradient accumulation + sample replay finished
-                    self._buffered_completions = self._generate_completions(inputs)
+                    self._buffered_completions = self._generate_completions(inputs) # generate completions for a whole batch
                     self._buffered_raw_inputs = gather_object(inputs)
+                    if self.args.keep_top_group_ratio < 1: # data filtering
+                        self._buffered_inputs, self._buffered_completions = self._sample_filtering(self._buffered_inputs, self._buffered_completions)
+                        
 
                 global_batch_size = self.args.custom_per_device_train_batch_size * self.accelerator.num_processes
                 start_idx = accumulate_local_step * global_batch_size

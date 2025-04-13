@@ -228,9 +228,9 @@ class GRPOConfig(TrainingArguments):
         default=-1, 
         metadata={"help": "customized per_device_train_batch_size"}
     )
-    custom_gradient_accumulation_steps: int = field(
+    keep_top_group_ratio: float = field(
         default=1,
-        metadata={"help": "customized gradient accumulation steps"}
+        metadata={"help": "the ratio of keeping groups with top reward std."}
     )
     # Parameters that control generation acceleration powered by vLLM
     use_vllm: bool = field(

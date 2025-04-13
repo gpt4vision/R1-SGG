@@ -130,6 +130,12 @@ def scale_box(box, scale):
     sw, sh = scale
     return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
 
+def is_box(item):
+    return (
+        isinstance(item, (list, tuple)) and
+        len(item) == 4 and
+        all(isinstance(e, (int, float)) for e in item)
+    )
 
 
 def visualize_assignments(image, pred_objs, gt_objs, assignments, filename,
@@ -286,6 +292,7 @@ def main():
             pred_rels = resp['relationships']
             for obj in pred_objs:
                 assert len(obj['bbox']) == 4, "len(obj['bbox']) != 4"
+                assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
 
             new_pred_rels = []
             for rel in pred_rels:
@@ -309,6 +316,7 @@ def main():
         for e in pred_objs:
             if is_qwen2vl:
                 e['bbox'] = scale_box(e['bbox'], scale_factors)
+
             org_name = e['id']
             cat = org_name.split('.')[0].replace('-', ' ').replace('_', ' ').lower()
             cats.append(cat)
