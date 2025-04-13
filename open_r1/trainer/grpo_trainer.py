@@ -541,7 +541,9 @@ class GRPOTrainerV2(Trainer):
                                               max_model_len=args.vllm_max_model_len,
                                               gpu_memory_utilization=args.vllm_gpu_memory_utilization,
                                               device='cuda:%s'%self.accelerator.local_process_index,
-                                              log_file=args.vllm_log_file
+                                              log_file=args.vllm_log_file,
+                                              min_pixels=min_pixels,
+                                              max_pixels=max_pixels
                                              )
             else:
                 vllm_server_hosts = args.vllm_server_host 

@@ -194,6 +194,14 @@ class ScriptArguments:
         default=None,
         metadata={"help": "Whether to enable prefix caching in vLLM."},
     )
+    min_pixels: Optional[int] = field(
+        default=4*28*28,
+        metadata={"help": "min_pixels for models like qwen2vl."}
+    )
+    max_pixels: Optional[int] = field(
+        default=1024*28*28,
+        metadata={"help": "max_pixels for models like qwen2vl."}
+    )
 
 
 def main(script_args: ScriptArguments):
@@ -230,6 +238,7 @@ def main(script_args: ScriptArguments):
         enable_prefix_caching=script_args.enable_prefix_caching,
         max_model_len=script_args.max_model_len,
         worker_cls=WeightSyncWorker,
+        mm_processor_kwargs= {"max_pixels": script_args.max_pixels, "min_pixels": script_args.min_pixels},
         limit_mm_per_prompt={"image": script_args.limit_mm_per_prompt},
     )
     app = FastAPI()

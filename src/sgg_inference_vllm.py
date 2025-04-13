@@ -23,6 +23,9 @@ from huggingface_hub import snapshot_download
 os.environ["NCCL_SOCKET_TIMEOUT"] = "3600000"  # 1 hours
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 
+
+from open_r1.trainer.utils.misc import encode_image_to_base64, is_pil_image
+
 SYSTEM_PROMPT = (
     "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
     "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
@@ -56,6 +59,7 @@ def get_model(name, device_map="auto", max_model_len=4096):
             dtype='bfloat16',
             device=device_map,
             max_model_len=max_model_len,
+            mm_processor_kwargs= { "max_pixels": max_pixels, "min_pixels": min_pixels},
         )
     else:
         raise Exception(f"Unknown model_id: {name}")
@@ -64,7 +68,7 @@ def get_model(name, device_map="auto", max_model_len=4096):
 
 
 def replace_answer_format(item: str) -> str:
-    return item.replace("<answer>", "```").replace("</answer>", "```")
+    return item.replace("<answer>", "```json").replace("</answer>", "```")
 
 def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False, remove_image_size_in_prompt=True):
     image = sample['image'].convert('RGB')
@@ -79,8 +83,9 @@ def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False
 
     prompt = replace_answer_format(prompt)
 
-
     system_prompt = SYSTEM_PROMPT if use_think_system_prompt else "You are a helpful and multimodal AI assistant."
+
+    base64_image = encode_image_to_base64(image)
     messages = [
         {
             "role": "system",
@@ -89,12 +94,12 @@ def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": image},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
                 {"type": "text", "text": prompt},
             ],
         },
     ]
-    return {"messages": messages}
+    return messages
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run model inference on a dataset.")
@@ -148,16 +153,11 @@ def main():
     
             llm_inputs = []
             for example in examples:
-                format_example = format_data(example, 
-                                             use_predefined_cats=self.use_predefined_cats, 
-                                             use_think_system_prompt=self.use_think_system_prompt)['messages']
-                prompt = self.processor.apply_chat_template(format_example,
-                                tokenize=False, add_generation_prompt=True)
+                prompt = format_data(example, 
+                                     use_predefined_cats=self.use_predefined_cats, 
+                                     use_think_system_prompt=self.use_think_system_prompt)
 
-                image_input = process_vision_info(format_example)[0]
-
-                tmp = {"prompt": prompt, "multi_modal_data": {"image": image_input}}
-                llm_inputs.append(tmp)
+                llm_inputs.append(prompt)
 
             return ids, gt_objs, gt_rels, llm_inputs
 
@@ -210,7 +210,7 @@ def main():
     for (im_ids, gt_objs, gt_rels, batch) in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
         with torch.no_grad():
             # Now pass correctly formatted inputs to vLLM
-            outputs = model.generate(batch, sampling_params=sampling_params)
+            outputs = model.chat(batch, sampling_params=sampling_params)
             output_texts = [output.outputs[0].text for output in outputs]
 
 
@@ -220,7 +220,6 @@ def main():
             os.system("nvidia-smi")
             print("*" * 100)
             print("*"*100, "\n", "image_id:", im_ids[0], "\n", 
-                  "Input:", batch[0]['prompt'], 
                   "Response:", output_texts[0], "\n",
                   "GT objs:", gt_objs[0], " GT rels.: ", gt_rels[0],
                     "*"*100)
