@@ -103,13 +103,28 @@ def bi_match(groundtruths, predictions, im_size):
         })
     return assignments
 
-def extract_answer_content(text):
-    pattern = r"<answer>(.*?)</answer>"
-    try:
-        matches = re.findall(pattern, text, re.DOTALL)[0]
-        return matches
-    except IndexError:
-        return text
+
+def extract_answer_content(text: str) -> str:
+    """
+    Extracts the content between <answer> and </answer> tags.
+    If no closing tag is found, extracts everything after the first <answer>.
+
+    Returns:
+        str: The extracted content.
+    """
+    text = text.replace("```", " ").replace("json", " ").strip()
+
+    # Try to find full <answer>...</answer>
+    match = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Fallback: everything after the first <answer>
+    match = re.search(r"<answer>(.*)", text, re.DOTALL)
+    return match.group(1).strip() if match else text
+
+
+def refine_node_edge(obj):
+    return obj.replace("_", " ").replace("-", " ").lower()
 
 def scale_box(box, scale):
     sw, sh = scale
@@ -265,10 +280,8 @@ def main():
         try:
             # Remove <answer> tags and parse JSON
             resp = extract_answer_content(resp)
-            resp = resp.replace("<answer>", "").replace("</answer>", "").strip()
-            resp = resp.replace("```", " ").replace("json", " ").strip()
-
             resp = json.loads(resp)
+
             pred_objs = resp['objects']
             pred_rels = resp['relationships']
             for obj in pred_objs:
