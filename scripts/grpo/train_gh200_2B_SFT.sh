@@ -24,15 +24,18 @@ export WANDB_PROJECT=RL4SGG
 
 GPUS_PER_NODE=4
 GROUP_SIZE=8
-MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
+#MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
+MODEL_PATH=$1
+
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-2b-grpo-g${GROUP_SIZE}-n1-temp1-topk50-bs32-gh200"
+RUN_NAME="qwen2vl-2b-sft-grpo-g${GROUP_SIZE}-n1-bs32-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
+export LOG_PATH=${OUTPUT_DIR}/debug.log
+
 MAX_PIXELS=$((512 * 28 * 28))
 
-export LOG_PATH=${OUTPUT_DIR}/debug.log
 
 MASTER_PORT=29500
 

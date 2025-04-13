@@ -307,7 +307,8 @@ class GRPOTrainerV2(Trainer):
         peft_config: Optional["PeftConfig"] = None,
         max_pixels: Optional[int] = 12845056,
         min_pixels: Optional[int] = 3136,        
-        data_collator=None
+        data_collator=None,
+        model_type: str = "qwen2vl"
     ):
         # Args
         if args is None:
@@ -318,6 +319,7 @@ class GRPOTrainerV2(Trainer):
         # Models
         # Trained model
         self.is_qwen2vl = False
+        self.model_type = model_type.lower()
         model_init_kwargs = args.model_init_kwargs or {}
         if isinstance(model, str):
             model_id = model
@@ -336,10 +338,10 @@ class GRPOTrainerV2(Trainer):
             model_init_kwargs["use_cache"] = (
                 False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
             )
-            if "Qwen2-VL" in model_id:
+            if self.model_type in ["qwen2vl", "qwen-2-vl"]:
                 self.is_qwen2vl = True
                 model = Qwen2VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
+            elif self.model_type in ["qwen2.5vl", "qwen-2.5-vl"]:
                 self.is_qwen2vl = True
                 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
             else:
@@ -367,9 +369,9 @@ class GRPOTrainerV2(Trainer):
             # If beta is 0.0, the reference model is not needed
             self.ref_model = None
         elif is_deepspeed_zero3_enabled():
-            if "Qwen2-VL" in model_id:
+            if self.model_type in ["qwen2vl", "qwen-2-vl"]:
                 self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
+            elif self.model_type in ["qwen2.5vl", "qwen-2.5-vl"]:
                 self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             else:
                 self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)            
@@ -383,7 +385,7 @@ class GRPOTrainerV2(Trainer):
 
         # Processing class
         if processing_class is None:
-            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id:
+            if self.is_qwen2vl:
                 processing_class = AutoProcessor.from_pretrained(model_id, min_pixels=min_pixels, max_pixels=max_pixels)
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id

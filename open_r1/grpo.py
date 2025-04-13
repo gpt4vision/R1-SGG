@@ -608,7 +608,8 @@ def main(script_args, training_args, model_args):
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
         data_collator=collator_instance,
-        processing_class=processor
+        processing_class=processor,
+        model_type="qwen2vl", #hack
     )
     # Check for existing checkpoint
     def find_valid_checkpoint(output_dir):
