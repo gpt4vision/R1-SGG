@@ -845,8 +845,24 @@ class GRPOTrainerV2(Trainer):
             self.vllm_client.reset_prefix_cache()
 
 
-    def _sample_filtering(self, inputs, completions):
+    def _sample_filtering(self, inputs, completion_ids):
         prompts = [x["prompt"] for x in inputs]
+
+        if self.use_vllm:
+            completion_ids_pad = [torch.tensor(ids, device=device) for ids in completion_ids]
+            completion_ids_pad = pad(completion_ids_pad, padding_value=self.processing_class.pad_token_id)
+        else:
+            completion_ids_pad = completion_ids
+
+        completions_text = self.processing_class.batch_decode(completion_ids_pad, skip_special_tokens=True)
+        if is_conversational(inputs[0]):
+            completions = []
+            for prompt, completion in zip(prompts, completions_text):
+                bootstrap = prompt.pop()["content"] if prompt[-1]["role"] == "assistant" else ""
+                completions.append([{"role": "assistant", "content": bootstrap + completion}])
+        else:
+            completions = completions_text
+
 
         rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=self.accelerator.device)
         for i, (reward_func, reward_processing_class) in enumerate(
@@ -903,9 +919,9 @@ class GRPOTrainerV2(Trainer):
         select_group = select_group[torch.randperm(len(select_group), device=device)]
         selected_indices = torch.cat([self.num_generations * idx + torch.arange(self.num_generations, device=device) for idx in select_group]).tolist()
         inputs = [inputs[i] for i in selected_indices]
-        completions = [completions[i] for i in selected_indices]
+        completion_ids = [completion_ids[i] for i in selected_indices]
 
-        return inputs, completions
+        return inputs, completion_ids
                
 
 
@@ -920,7 +936,7 @@ class GRPOTrainerV2(Trainer):
                     self._buffered_completions = self._generate_completions(inputs) # generate completions for a whole batch
                     self._buffered_raw_inputs = gather_object(inputs)
                     if self.args.keep_top_group_ratio < 1: # data filtering
-                        self._buffered_inputs, self._buffered_completions = self._sample_filtering(self._buffered_inputs, self._buffered_completions)
+                        self._buffered_raw_inputs, self._buffered_completions = self._sample_filtering(self._buffered_raw_inputs, self._buffered_completions)
                         
 
                 global_batch_size = self.args.custom_per_device_train_batch_size * self.accelerator.num_processes
