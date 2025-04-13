@@ -65,6 +65,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --max_completion_length 1024 \
     --custom_per_device_train_batch_size 1 \
     --gradient_accumulation_steps 2 \
+    --learning_rate 3e-7 \
     --logging_steps 1 \
     --use_vllm true \
     --vllm_server_host ${SERVER_IP} \
@@ -85,6 +86,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --num_generations 8 \
     --num_iterations 1 \
     --beta 0.0 \
+    --save_only_model true \
     --seed 42"
 
 # ---------- Functions ----------
