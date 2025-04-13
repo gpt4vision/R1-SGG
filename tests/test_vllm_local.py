@@ -16,6 +16,12 @@ from tqdm import tqdm
 
 from transformers import Qwen2VLForConditionalGeneration
 
+SYSTEM_PROMPT = (
+    "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
+    "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
+    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
+    "<think> reasoning process here </think><answer> answer here </answer>"
+)
 
 
 def encode_image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
@@ -25,13 +31,23 @@ def encode_image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
 
 
 def prepare_messages(item):
+    def replace_answer_format(item: str) -> str:
+        return item.replace("<answer>", "```json").replace("</answer>", "```")
+
     image = item['image']
+    org_iw, org_ih = image.size
+
     prompt = item['prompt_open']
+    prompt = prompt.replace(f"of size ({org_iw} x {org_ih}) ", "")
+    prompt = replace_answer_format(prompt)
+
     encoded_image_text = encode_image_to_base64(image)
     base64_qwen = f"data:image/jpeg;base64,{encoded_image_text}"
 
     messages_vllm = [
-        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "system", 
+         "content": SYSTEM_PROMPT
+        },
         {
             "role": "user",
             "content": [
@@ -40,10 +56,7 @@ def prepare_messages(item):
             ],
         },
     ]
-
     return messages_vllm 
-
-
 
 
 def main(args):

@@ -15,6 +15,7 @@
 import os
 import re
 import json
+import glob
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
@@ -607,9 +608,22 @@ def main(script_args, training_args, model_args):
         data_collator=collator_instance,
         processing_class=processor
     )
+    # Check for existing checkpoint
+    def find_valid_checkpoint(output_dir):
+        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")))
+        for ckpt in reversed(checkpoints):  # Check latest first
+            if glob.glob(os.path.join(ckpt, "global_step*")):
+                return ckpt
+        return None
+    
+    ckpt_to_resume = find_valid_checkpoint(training_args.output_dir)
+    if ckpt_to_resume:
+        print(f"[INFO] Resuming from checkpoint: {ckpt_to_resume}")
+        trainer.train(resume_from_checkpoint=ckpt_to_resume)
+    else:
+        print("[INFO] Starting training from scratch")
+        trainer.train()
 
-    #trainer.train(resume_from_checkpoint=True)
-    trainer.train()
     trainer.save_model(training_args.output_dir)
     if training_args.push_to_hub:
         trainer.push_to_hub(dataset_name=script_args.dataset_name)
