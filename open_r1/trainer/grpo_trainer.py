@@ -847,6 +847,7 @@ class GRPOTrainerV2(Trainer):
 
     def _sample_filtering(self, inputs, completion_ids):
         prompts = [x["prompt"] for x in inputs]
+        device = self.accelerator.device
 
         if self.use_vllm:
             completion_ids_pad = [torch.tensor(ids, device=device) for ids in completion_ids]
