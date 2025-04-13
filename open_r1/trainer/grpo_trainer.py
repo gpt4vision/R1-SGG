@@ -1194,6 +1194,7 @@ class GRPOTrainerV2(Trainer):
             self._metrics[mode][f"rewards/{reward_func_name}"].append(mean_rewards)
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
+        self._metrics[mode]["reward_std_std"].append(std_grouped_rewards.std().item())
 
 
         return {

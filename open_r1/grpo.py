@@ -56,8 +56,9 @@ IOU_WEIGHT = 2.0
 BOX_L1_WEIGHT = 5.0
 
 
+FORMAT_REWARD_WEIGHT = 1.0 
 NODE_REWARD_WEIGHT = 2.0
-EDGE_REWARD_WEIGHT = 5.0
+EDGE_REWARD_WEIGHT = 5.0 
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -405,13 +406,9 @@ def format_reward(completions, image_id, **kwargs):
         content = completion[0]["content"]
         match = re.fullmatch(pattern, content, re.DOTALL)
         reward = 0.0
-        if not match:
-            rewards.append(0.0)
-            continue
-        answer_content = match.group(1).strip()
         try:
-            answer_json = json.loads(extract_answer_content(answer_content))
-            if isinstance(answer_json, dict) and "objects" in answer_json and "relationships" in answer_json:
+            answer_json = json.loads(extract_answer_content(content))
+            if isinstance(answer_json, dict) and ("objects" in answer_json) and ("relationships" in answer_json):
                 objs = set([e['id'] for e in answer_json["objects"]])
                 obj_valid = True
                 for rel in answer_json["relationships"]:
@@ -420,9 +417,14 @@ def format_reward(completions, image_id, **kwargs):
                     if (sub not in objs) or (obj not in objs):
                         obj_valid = False
                 
-                reward = 1.0 if obj_valid else 0.0
+                if match and obj_valid:
+                    reward = 1.0
+                elif obj_valid:
+                    reward = 0.5 
+                else:
+                    reward = 0.0
             
-            rewards.append(reward)
+            rewards.append(reward * FORMAT_REWARD_WEIGHT)
         except Exception:
             rewards.append(0.0)
 

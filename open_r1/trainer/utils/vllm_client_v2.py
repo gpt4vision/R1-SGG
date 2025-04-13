@@ -75,7 +75,7 @@ class VLLMClient:
         pipeline_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.25, 
         dtype: str = "auto",
-        enable_prefix_caching: Optional[bool] = None,
+        enable_prefix_caching: Optional[bool] = False,
         max_model_len: int = 4096,
         limit_mm_per_prompt: int = 1,
         device: str="auto",

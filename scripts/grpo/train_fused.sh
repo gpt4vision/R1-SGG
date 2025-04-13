@@ -65,6 +65,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --max_completion_length 1024 \
     --custom_per_device_train_batch_size 1 \
     --gradient_accumulation_steps 2 \
+    --learning_rate 3e-7 \
     --logging_steps 1 \
     --use_vllm true \
     --vllm_server_host ${SERVER_IP} \
@@ -76,15 +77,17 @@ TRAIN_CMD="open_r1/grpo.py \
     --report_to wandb \
     --gradient_checkpointing true \
     --max_pixels ${MAX_PIXELS} \
-    --temperature 0.3 \
-    --top_p 0.001 \
-    --top_k 1 \
+    --temperature 1 \
+    --top_p 0.9 \
+    --top_k 50 \
     --num_train_epochs 1 \
     --run_name ${RUN_NAME} \
     --save_steps 100 \
     --num_generations 8 \
     --num_iterations 1 \
-    --beta 0.0"
+    --beta 0.0 \
+    --save_only_model true \
+    --seed 42"
 
 # ---------- Functions ----------
 launch_mixed_node() {
