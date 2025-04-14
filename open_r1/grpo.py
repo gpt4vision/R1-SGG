@@ -45,11 +45,11 @@ LOG_PATH = os.getenv("LOG_PATH", "debug.log")
 
 # Load spaCy model (with word vectors)
 try:
-    nlp = spacy.load("en_core_web_md")
+    nlp = spacy.load("en_core_web_sm")
 except OSError:
     from spacy.cli import download
-    download("en_core_web_md")
-    nlp = spacy.load("en_core_web_md")
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
 
 SEM_WEIGHT = 1.0
 IOU_WEIGHT = 2.0
@@ -369,12 +369,8 @@ def edge_reward(completions, solution, image_id,  **kwargs):
                 obj_mapped = map_obj[obj]
                 if (sub_mapped, obj_mapped) in pred_triplets:
                     pred_pred = pred_triplets[(sub_mapped, obj_mapped)]
-                    sub_iou = compute_iou(gt_boxes[sub], pred_boxes[sub_mapped])
-                    obj_iou = compute_iou(gt_boxes[obj], pred_boxes[obj_mapped])
                     
-                    reward += int(sub_iou >= 0.5) * \
-                              int(obj_iou >= 0.5) * \
-                              category_semantic_similarity(gt_rel['predicate'], pred_pred) 
+                    reward += category_semantic_similarity(gt_rel['predicate'], pred_pred) 
                     match_triplets.append(
                         f"GT triplet: {sub} -> {gt_rel['predicate']} -> {obj}, "
                         f"Pred: {sub_mapped} -> {pred_pred} -> {obj_mapped}"
