@@ -57,8 +57,8 @@ BOX_L1_WEIGHT = 5.0
 
 
 FORMAT_REWARD_WEIGHT = 1.0 
-NODE_REWARD_WEIGHT = 2.0
-EDGE_REWARD_WEIGHT = 5.0 
+NODE_REWARD_WEIGHT = 1.0
+EDGE_REWARD_WEIGHT = 1.0 
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -369,9 +369,11 @@ def edge_reward(completions, solution, image_id,  **kwargs):
                 obj_mapped = map_obj[obj]
                 if (sub_mapped, obj_mapped) in pred_triplets:
                     pred_pred = pred_triplets[(sub_mapped, obj_mapped)]
-                    reward += category_semantic_similarity(gt_rel['predicate'], pred_pred) * EDGE_REWARD_WEIGHT
+                    reward += category_semantic_similarity(sub.split('.')[0], sub_mapped.split('.')[0] ) * \
+                              category_semantic_similarity(obj.split('.')[0], obj_mapped.split('.')[0] ) * \
+                              category_semantic_similarity(gt_rel['predicate'], pred_pred) * EDGE_REWARD_WEIGHT
                     match_triplets.append(
-                        f"GT triplet: {sub_mapped} -> {gt_rel['predicate']} -> {obj_mapped}, "
+                        f"GT triplet: {sub} -> {gt_rel['predicate']} -> {obj}, "
                         f"Pred: {sub_mapped} -> {pred_pred} -> {obj_mapped}"
                     )
             reward /= len(gt_rels) if gt_rels else 1
