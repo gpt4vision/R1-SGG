@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=GRPO_train_GH200
+#SBATCH --job-name=7B_GH200_SFT_GRPO
 #SBATCH --time=12:00:00
 
 #SBATCH --nodes=4  # 4 nodes, each has 4x GH200                   
@@ -27,9 +27,11 @@ GROUP_SIZE=8
 MODEL_PATH=$1
 
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-temp1-topk50-gh200"
+RUN_NAME="qwen2vl-7b-sft-grpo-g${GROUP_SIZE}-n1-bs32-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
+
+export LOG_PATH=${OUTPUT_DIR}/debug.log
 
 MAX_PIXELS=$((512 * 28 * 28))
 
@@ -86,7 +88,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --save_only_model false"
 
     
-echo "start training..."
+echo "start training with TRAIN_CMD=${TRAIN_CMD} ..."
 
 srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
