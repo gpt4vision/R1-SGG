@@ -62,9 +62,9 @@ TRAIN_CMD="open_r1/grpo.py \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
-    --custom_per_device_train_batch_size 16 \
+    --custom_per_device_train_batch_size 8 \
     --deepspeed ./local_scripts/zero2_offload.json \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps 2 \
     --learning_rate 3e-7 \
     --logging_steps 1 \
     --use_vllm true \

@@ -25,11 +25,14 @@ VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "an
 
 # Load spaCy model (with word vectors)
 try:
-    nlp = spacy.load("en_core_web_md")
+    nlp = spacy.load("en_core_web_sm")
 except OSError:
     from spacy.cli import download
-    download("en_core_web_md")
-    nlp = spacy.load("en_core_web_md")
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
+
+
+DEBUG=False
 
 # Cache for spaCy docs to avoid repeated computations
 doc_cache = {}
@@ -266,14 +269,14 @@ def main():
 
     all_im_ids = []
     for kk, item in enumerate(tqdm(preds, desc="Processing images")):
-        #if kk > 10: break
+        if DEBUG and kk > 10:
+            break
 
         im_id = item['image_id']
         all_im_ids.append(im_id)
         image = db[im_id]['image']
-        if is_qwen2vl:
+        if is_qwen2vl: # for Qwen2VL, the output is normalized to [0, 1000]
             iw, ih = image.size
-            # Precompute scale factors for baseline (if needed)
             scale_factors = (iw / 1000.0, ih / 1000.0)
             # Uncomment the following line to log image details if necessary
             # print("image id:", im_id, " image size:", image.size)
@@ -293,6 +296,7 @@ def main():
             for obj in pred_objs:
                 assert len(obj['bbox']) == 4, "len(obj['bbox']) != 4"
                 assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
+                assert 'id' in obj, "invalid obj:{}".format(obj)
 
             new_pred_rels = []
             for rel in pred_rels:
@@ -380,15 +384,14 @@ def main():
                                       'pred_boxes_score': pred_objs_dict['scores']
                                       }
 
-    
-        assignments = bi_match(gt_objs, pred_objs, (iw, ih) )
-        for match in assignments:
-            gt_id = match['groundtruth']['id']
-            pred_id = match['prediction']['id'] if match['prediction'] is not None else "null"
-            print(f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {match['cost']:.3f}")
-        
-        # Uncomment the following line to visualize each assignment if needed
-        #visualize_assignments(image, pred_objs, gt_objs, assignments, f"rl-vis/{im_id}.jpg", pred_rels, gt_rels)
+        if DEBUG:
+            assignments = bi_match(gt_objs, pred_objs, (iw, ih) )
+            for match in assignments:
+                gt_id = match['groundtruth']['id']
+                pred_id = match['prediction']['id'] if match['prediction'] is not None else "null"
+                print(f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {match['cost']:.3f}")
+            
+            visualize_assignments(image, pred_objs, gt_objs, assignments, f"rl-vis/{im_id}.jpg", pred_rels, gt_rels)
 
     cats = list(set(cats))
     print("fails:", fails)

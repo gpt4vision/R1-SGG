@@ -1,17 +1,18 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=A100_2B_SFT_CLOSE_RL
-#SBATCH --time=24:00:00
+#SBATCH --job-name=7B_GH200_close
+#SBATCH --time=12:00:00
 
-#SBATCH --nodes=4  # 4 nodes, each has 4x A100  
+#SBATCH --nodes=4  # 4 nodes, each has 4x GH200                   
+#SBATCH --ntasks=4                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=128
+#SBATCH --cpus-per-task=288 # fixed for GH200
 
 #SBATCH --account=a-a03
 #SBATCH --partition=normal
-#SBATCH --output=RL_A100_%j_%N.out
+#SBATCH --output=RL_gh200_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
@@ -23,15 +24,11 @@ export WANDB_PROJECT=RL4SGG
 
 GPUS_PER_NODE=4
 GROUP_SIZE=8
-#MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
-MODEL_PATH=$1
-
+MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-2b-sft-close-grpo-g${GROUP_SIZE}-n1-bs32-A100-SXM4"
+RUN_NAME="qwen2vl-7b-close-grpo-g${GROUP_SIZE}-n1-bs32-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
-
-export LOG_PATH=${OUTPUT_DIR}/debug.log
 
 MAX_PIXELS=$((512 * 28 * 28))
 
@@ -44,27 +41,29 @@ TRAIN_NODES_LIST=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 
 # Choose the first training node as the rendezvous head node
 HEAD_NODE=${TRAIN_NODES_LIST[0]}
-
-#MASTER_ADDR=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
-
-MASTER_ADDR=$(echo "${SLURM_NODELIST}" | sed 's/[],].*//g; s/\[//g')
-echo "MASTER_ADDR: $MASTER_ADDR"
+HEAD_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
+echo "Head Node IP: $HEAD_NODE_IP"
 
 
 
-# batch size: PER_GPU(4)*GPUS(4)*NODES(4)*ACC(4) // GROUP_SIZE(8) = 32
-# local vLLM: 80G*0.2=16G
+# GH200 has a very high bandwidth between CPU and GPU, we should use it!
+# zero2:
+# bsz_per_devie=16, OOM; Ok,  with CPU offload for optimizer, ~60h with 3x GPUs
+# bsz_per_devie=8, 386s for 30 steps, ~60h with 3x GPUs
+# bsz_per_devie=16, ~40h with 4x GPUs
 #
+#  batch size: 16*1*4*4 //8=32
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
-    --custom_per_device_train_batch_size 4 \
-    --deepspeed ./local_scripts/zero2.json \
-    --gradient_accumulation_steps 4 \
+    --custom_per_device_train_batch_size 8 \
+    --deepspeed ./local_scripts/zero2_offload.json \
+    --gradient_accumulation_steps 2 \
     --learning_rate 3e-7 \
+    --use_predefined_cats true \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\
@@ -73,7 +72,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --report_to wandb \
     --gradient_checkpointing true \
     --max_pixels ${MAX_PIXELS} \
-    --temperature 1.0 \
+    --temperature 1 \
     --top_p 0.9 \
     --top_k 50 \
     --num_train_epochs 1 \
@@ -83,10 +82,8 @@ TRAIN_CMD="open_r1/grpo.py \
     --num_iterations 1 \
     --beta 0.0\
     --vllm_max_model_len 4096 \
-    --vllm_gpu_memory_utilization 0.25 \
-    --save_only_model true\
-    --use_predefined_cats true \
-    --seed 42"
+    --vllm_gpu_memory_utilization 0.2 \
+    --save_only_model false"
 
     
 echo "start training..."
@@ -96,5 +93,5 @@ srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
     --node_rank ${SLURM_NODEID} \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
-    --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
+    --rdzv_endpoint ${HEAD_NODE_IP}:${MASTER_PORT} \
     ${TRAIN_CMD}

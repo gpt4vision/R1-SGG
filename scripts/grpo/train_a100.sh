@@ -1,10 +1,10 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=GRPO_train_A100
+#SBATCH --job-name=7B_A100
 #SBATCH --time=24:00:00
 
-#SBATCH --nodes=4  # 4 nodes, each has 4x A100  
+#SBATCH --nodes=8  # each has 4x A100  
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=128
@@ -15,6 +15,7 @@
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
+set -x 
 # ---------- Environment Setup ----------
 export NCCL_ASYNC_ERROR_HANDLING=1
 export DEBUG_MODE=True
@@ -25,7 +26,7 @@ GPUS_PER_NODE=4
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-temp1-topk50-top0.9"
+RUN_NAME="qwen2vl-7b-grpo-g${GROUP_SIZE}-n1-bs32-A100-SXM4"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -48,7 +49,7 @@ echo "MASTER_ADDR: $MASTER_ADDR"
 
 
 
-# batch size: PER_GPU(2)*GPUS(4)*NODES(4)*ACC(8) //8=32
+# batch size: PER_GPU(2)*GPUS(4)*NODES(8)*ACC(4) //8=32
 # local vLLM: 80G*0.25=20G
 #
 TRAIN_CMD="open_r1/grpo.py \
@@ -57,9 +58,10 @@ TRAIN_CMD="open_r1/grpo.py \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
-    --custom_per_device_train_batch_size 2 \
+    --custom_per_device_train_batch_size 4 \
     --deepspeed ./local_scripts/zero2.json \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps 2 \
+    --learning_rate 3e-7 \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\

@@ -25,7 +25,7 @@ GPUS_PER_NODE=4
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-2b-grpo-g${GROUP_SIZE}-n1-bs32-A100-SXM4"
+RUN_NAME="qwen2vl-2b-grpo-g${GROUP_SIZE}-n1-bs32-lr1e-6-A100-SXM4"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -62,7 +62,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --custom_per_device_train_batch_size 4 \
     --deepspeed ./local_scripts/zero2.json \
     --gradient_accumulation_steps 4 \
-    --learning_rate 3e-7 \
+    --learning_rate 1e-6 \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\
