@@ -37,7 +37,8 @@ For local machine,
 ```
 bash scripts/sft_loca/7B_sgg.sh
 ```
-
+For 2B models, it requires about 4 hours with a 4xA100 SXM4 GPUs.
+For 7B models, it requires about 10 hours with a 4xA100 SXM4 GPUs.
 
 
 ## Training with GRPO
