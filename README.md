@@ -21,6 +21,12 @@ db_val = load_dataset("JosephZ/vg150_val_sgg_prompt")["train"]
 ```
 we transformed VG150 into datasets format with keys: "image_id", "image", "prompt_open", "prompt_close", "objects", and "relationships".
 
+## Supported Models
+- [x] Qwen/Qwen2-VL-2B-Instruct 
+- [x] Qwen/Qwen2-VL-7B-Instruct
+- [ ] Qwen/Qwen2.5-VL-3B-Instruct 
+- [ ] Qwen/Qwen2.5-VL-7B-Instruct 
+
 
 ## Training with SFT
 For slurm users,
