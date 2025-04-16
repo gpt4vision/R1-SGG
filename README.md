@@ -41,24 +41,27 @@ bash scripts/sft_loca/7B_sgg.sh
 
 
 ## Training with GRPO
-For A100 GPUs,
+For A100 GPUs, to train a 2B model via
 ```
-sbatch scripts/grpo/train_a100.sh
+sbatch scripts/grpo/train_a100_2B.sh
 ```
+which requires about 12 hours with 16x A100 GPUs.
+
 
 For GH200 GPUs,
 ```
 sbatch scripts/grpo/train_gh200.sh
 ```
+which requires about 16 hours with 16x GH200 GPUs.
 
-with these large-memory GPUs (> 80GB), we allocate one vLLM server at each training process to reduce the communication latency.
+with these large-memory GPUs (> 80GB), we allocate one vLLM server at each training process to reduce the communication latency and speedup the sampling process.
 
 
 If you have lots of GPUs like RTX_3090/RTX_4090, you can use 
 ```
 sbatch scripts/grpo/train_fused.sh
 ```
-with Zero3, you can train 7B model on 24GB GPUs but the training speed is slow as the communication is the bottleneck.
+with Zero3, you can train 7B model on 24GB GPUs but the training speed is slow as the communication is the bottleneck (I have tried to use 120 RTX_4090 GPUs. It is crazy, but the communication latency is significant due to RTX_4090 does not have NCCL support.)
 
 ## Inference
 - To test models trained with SFT, 
