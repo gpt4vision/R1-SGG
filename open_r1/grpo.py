@@ -20,6 +20,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 from tqdm import tqdm
+from collections import OrderedDict
 
 import torch
 #import torch._dynamo
@@ -202,7 +203,19 @@ def cost_function(pred, gt, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1
     return sem_weight * (1.0 - sem_sim) + iou_weight * (1.0 - iou) + box_l1_weight * box_L1(pred['bbox'], gt['bbox'])
 
 
-def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
+def _freeze_objs(objs):
+    """
+    Turn a list of scene‑graph objects into a hashable key:
+    (‘id’, (x1, y1, x2, y2))
+    """
+    return tuple(
+        (o["id"], tuple(o["bbox"])) for o in objs
+    )
+
+def _bi_match_impl(groundtruths, predictions,
+                   sem_weight=SEM_WEIGHT,
+                   iou_weight=IOU_WEIGHT,
+                   box_l1_weight=BOX_L1_WEIGHT):
     num_gt = len(groundtruths)
     num_pred = len(predictions)
     pad = max(0, num_gt - num_pred)
@@ -210,21 +223,80 @@ def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WE
 
     for i, pred in enumerate(predictions):
         for j, gt in enumerate(groundtruths):
-            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight, box_l1_weight)
-    if pad > 0:
-        cost_matrix[num_pred:, :] = 100000  # High cost for padded rows
+            cost_matrix[i, j] = cost_function(
+                pred, gt, sem_weight, iou_weight, box_l1_weight
+            )
+
+    if pad:
+        cost_matrix[num_pred:, :] = 1e5       # high cost for padded rows
 
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
-    assignments = []
-    for r, c in zip(row_ind, col_ind):
-        if r >= num_pred:
-            continue
-        assignments.append({
-            'groundtruth': groundtruths[c],
-            'prediction': predictions[r],
-            'cost': cost_matrix[r, c]
-        })
-    return assignments
+    return [
+        {
+            "groundtruth": groundtruths[c],
+            "prediction":  predictions[r],
+            "cost":        cost_matrix[r, c],
+        }
+        for r, c in zip(row_ind, col_ind)
+        if r < num_pred
+    ]
+
+@lru_cache(maxsize=4096)
+def _bi_match_cached(gt_key, pred_key,
+                     sem_weight, iou_weight, box_l1_weight):
+    """
+    Hashable wrapper so we can cache across identical calls.
+    Converts the frozen keys back to lists of dicts for the impl fn.
+    """
+    groundtruths = [
+        {"id": obj_id, "bbox": list(bbox)}
+        for obj_id, bbox in gt_key
+    ]
+    predictions = [
+        {"id": obj_id, "bbox": list(bbox)}
+        for obj_id, bbox in pred_key
+    ]
+    return _bi_match_impl(
+        groundtruths, predictions,
+        sem_weight, iou_weight, box_l1_weight
+    )
+
+def bi_match(groundtruths, predictions,
+             sem_weight=SEM_WEIGHT,
+             iou_weight=IOU_WEIGHT,
+             box_l1_weight=BOX_L1_WEIGHT):
+    """
+    Thin, cached front‑end that keeps the original signature.
+    """
+    return _bi_match_cached(
+        _freeze_objs(groundtruths),
+        _freeze_objs(predictions),
+        sem_weight, iou_weight, box_l1_weight,
+    )
+
+#def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
+#    num_gt = len(groundtruths)
+#    num_pred = len(predictions)
+#    pad = max(0, num_gt - num_pred)
+#    cost_matrix = np.zeros((num_pred + pad, num_gt))
+#
+#    for i, pred in enumerate(predictions):
+#        for j, gt in enumerate(groundtruths):
+#            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight, box_l1_weight)
+#    if pad > 0:
+#        cost_matrix[num_pred:, :] = 100000  # High cost for padded rows
+#
+#    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+#    assignments = []
+#    for r, c in zip(row_ind, col_ind):
+#        if r >= num_pred:
+#            continue
+#        assignments.append({
+#            'groundtruth': groundtruths[c],
+#            'prediction': predictions[r],
+#            'cost': cost_matrix[r, c]
+#        })
+#    return assignments
 
 
 def node_acc_reward(completions, solution, image_id, **kwargs):
