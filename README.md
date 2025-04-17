@@ -1,5 +1,8 @@
 # R1-SGG: Compile Scene Graphs with Reinforcement Learning
 
+## Update
+- [ ] Current loss implementation will be affected by gradient accumulation: https://github.com/huggingface/trl/issues/3021
+
 ## Setup Environment
 ```
 bash install.sh
