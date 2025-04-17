@@ -1430,7 +1430,9 @@ class GRPOTrainerV2(Trainer):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if self.beta != 0.0:
             per_token_loss = per_token_loss + self.beta * per_token_kl
-        loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
+
+        # fix the issue for gradient accumulation
+        loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
 
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
