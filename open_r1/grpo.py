@@ -482,8 +482,8 @@ def format_reward(completions, image_id, **kwargs):
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
     for completion, im_id in zip(completions, image_id):
-        content = completion[0]["content"]
-        match = re.fullmatch(pattern, content.strip(), re.DOTALL)
+        content = completion[0]["content"].strip() 
+        match = re.fullmatch(pattern, content, re.DOTALL)
         reward = 0.0
         try:
             answer_json = json.loads(extract_answer_content(content))
@@ -498,8 +498,8 @@ def format_reward(completions, image_id, **kwargs):
                 
                 if match and obj_valid:
                     reward = 1.0
-                elif obj_valid:
-                    reward = 0.5 
+                #elif obj_valid:
+                #    reward = 0.5 
                 else:
                     reward = 0.0
             
