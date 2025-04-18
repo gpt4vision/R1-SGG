@@ -274,6 +274,29 @@ def bi_match(groundtruths, predictions,
         sem_weight, iou_weight, box_l1_weight,
     )
 
+#def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
+#    num_gt = len(groundtruths)
+#    num_pred = len(predictions)
+#    pad = max(0, num_gt - num_pred)
+#    cost_matrix = np.zeros((num_pred + pad, num_gt))
+#
+#    for i, pred in enumerate(predictions):
+#        for j, gt in enumerate(groundtruths):
+#            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight, box_l1_weight)
+#    if pad > 0:
+#        cost_matrix[num_pred:, :] = 100000  # High cost for padded rows
+#
+#    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+#    assignments = []
+#    for r, c in zip(row_ind, col_ind):
+#        if r >= num_pred:
+#            continue
+#        assignments.append({
+#            'groundtruth': groundtruths[c],
+#            'prediction': predictions[r],
+#            'cost': cost_matrix[r, c]
+#        })
+#    return assignments
 
 
 def node_acc_reward(completions, solution, image_id, **kwargs):
@@ -669,7 +692,7 @@ def main(script_args, training_args, model_args):
     )
     # Check for existing checkpoint
     def find_valid_checkpoint(output_dir):
-        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")))
+        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")), key=lambda x:int(x.split('checkpoint-')[1]))
         for ckpt in reversed(checkpoints):  # Check latest first
             if glob.glob(os.path.join(ckpt, "global_step*")):
                 return ckpt
