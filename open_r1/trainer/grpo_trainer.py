@@ -629,7 +629,7 @@ class GRPOTrainerV2(Trainer):
         self.model.add_model_tags(self._tag_names)
 
         if self.ref_model is not None:
-            if self.is_deepspeed_enabled:
+            if is_deepspeed_zero3_enabled():
                 self.ref_model = prepare_deepspeed(self.ref_model, self.accelerator)
             else:
                 self.ref_model = self.accelerator.prepare_model(self.ref_model, evaluation_mode=True)
@@ -1133,7 +1133,7 @@ class GRPOTrainerV2(Trainer):
 
 
         # truncate TODO: dangerous for qwen2vl
-        if self.max_prompt_length is not None:
+        if self.max_prompt_length is not None and not self.is_qwen2vl:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
