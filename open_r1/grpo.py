@@ -692,7 +692,7 @@ def main(script_args, training_args, model_args):
     )
     # Check for existing checkpoint
     def find_valid_checkpoint(output_dir):
-        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")))
+        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")), key=lambda x:int(x.split('checkpoint-')[1]))
         for ckpt in reversed(checkpoints):  # Check latest first
             if glob.glob(os.path.join(ckpt, "global_step*")):
                 return ckpt

@@ -44,8 +44,9 @@ TRAIN_NODES_LIST=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 HEAD_NODE=${TRAIN_NODES_LIST[0]}
 
 #MASTER_ADDR=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
+#MASTER_ADDR=$(echo "${SLURM_NODELIST}" | sed 's/[],].*//g; s/\[//g')
 
-MASTER_ADDR=$(echo "${SLURM_NODELIST}" | sed 's/[],].*//g; s/\[//g')
+MASTER_ADDR=$(scontrol show hostnames $SLURM_NODELIST | head -n 1)
 echo "MASTER_ADDR: $MASTER_ADDR"
 
 
@@ -70,7 +71,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --bf16 true\
     --tf32 true\
     --report_to wandb \
-    --gradient_checkpointing true \
+    --gradient_checkpointing false \
     --max_pixels ${MAX_PIXELS} \
     --temperature 1.0 \
     --top_p 0.9 \
@@ -89,8 +90,7 @@ TRAIN_CMD="open_r1/grpo.py \
     
 echo "start training..."
 
-srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
-    torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
+srun torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
     --node_rank ${SLURM_NODEID} \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \

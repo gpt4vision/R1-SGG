@@ -448,6 +448,7 @@ class GRPOTrainerV2(Trainer):
         self.repetition_penalty = args.repetition_penalty
         self.use_vllm = args.use_vllm
         self.use_liger_loss = args.use_liger_loss
+        self.loss_type = args.loss_type
 
         # Multi-step
         self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
@@ -481,6 +482,12 @@ class GRPOTrainerV2(Trainer):
                 )
             if is_peft_model(model):
                 raise ValueError("Liger loss is not supported with a PEFT model.")
+
+            if self.loss_type != "bnpo":
+                raise ValueError(
+                    f"The provided loss type (`{self.loss_type}`) is not supported with `use_liger_loss`. Liger loss "
+                    "only supports `bnpo` for now."
+                )            
 
             self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
                 beta=self.beta,
@@ -1430,7 +1437,15 @@ class GRPOTrainerV2(Trainer):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if self.beta != 0.0:
             per_token_loss = per_token_loss + self.beta * per_token_kl
-        loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
+        
+        if self.loss_type == "grpo":
+            loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        elif self.loss_type == "bnpo":
+            loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+        elif self.loss_type == "dr_grpo":
+            loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
 
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
