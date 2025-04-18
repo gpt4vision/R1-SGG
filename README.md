@@ -1,10 +1,9 @@
 # R1-SGG: Compile Scene Graphs with Reinforcement Learning
 
 ## Update
-- [x] Update the loss for gradient accumulation.
-- [x] Always set ``custom_per_device_train_batch_size`` instead of ``per_device_train_batch_size``, since the sampling will be performed for a whole batch data to speed up the training when gradient accumulation steps > 1.
-- ~~Current loss implementation will be affected by gradient accumulation: https://github.com/huggingface/trl/issues/3021~~
-- Current arxiv version used the branch ``arxiv-0417``, which will be affected by the gradient accumulation.
+- [x] update the loss implementation
+- [x] always set ``custom_per_device_train_batch_size`` instead of ``per_device_train_batch_size``, since the sampling will be performed for a whole batch data to speed up the training when gradient accumulation steps > 1.
+- [ ] current loss implementation will be affected by gradient accumulation: https://github.com/huggingface/trl/issues/3021
 
 ## Setup Environment
 ```
