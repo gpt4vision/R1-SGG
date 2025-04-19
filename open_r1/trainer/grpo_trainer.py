@@ -1057,7 +1057,9 @@ class GRPOTrainerV2(Trainer):
                             guided_decoding_regex=self.guided_decoding_regex,
                         )
                 else:
-                     completion_ids = []
+                    completion_ids = []
+
+                self.accelerator.wait_for_everyone()
                 # gather from all processes
                 completion_ids = gather_object(completion_ids)
             else:
