@@ -16,6 +16,7 @@ import os
 import re
 import json
 import glob
+import copy
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
@@ -333,12 +334,11 @@ def bi_match(groundtruths, predictions,
 #    return assignments
 
 
-def node_acc_reward(completions, solution, image_id, task_type, **kwargs):
+def node_acc_reward(completions, solution, image_id, task_type_list, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    task_type_list = task_type
 
     for content, sol, im_id, task_type in zip(contents, solution, image_id, task_type_list):
         reward = 0.0
@@ -377,19 +377,18 @@ def node_acc_reward(completions, solution, image_id, task_type, **kwargs):
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Node-level Acc. Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Node-level Acc. Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def node_box_reward(completions, solution, image_id, task_type, **kwargs):
+def node_box_reward(completions, solution, image_id, task_type_list, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    task_type_list = task_type
 
     for content, sol, im_id, task_type in zip(contents, solution, image_id, task_type_list):
         reward = 0.0
@@ -428,19 +427,18 @@ def node_box_reward(completions, solution, image_id, task_type, **kwargs):
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Node-level IoU Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Node-level IoU Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def edge_reward(completions, solution, image_id,  task_type, **kwargs):
+def edge_reward(completions, solution, image_id,  task_type_list, **kwargs):
     """Compute edge-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    task_type_list = task_type
 
     for content, sol, im_id, task_type in zip(contents, solution, image_id, task_type_list):
         reward = 0.0
@@ -519,7 +517,7 @@ def edge_reward(completions, solution, image_id,  task_type, **kwargs):
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Edge-level Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Edge-level Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
@@ -550,13 +548,12 @@ def is_valid_predicate(item):
 
     return all(isinstance(item[k], str) for k in keys)
 
-def format_reward(completions, image_id, task_type, **kwargs):
+def format_reward(completions, image_id, task_type_list, **kwargs):
     """
     Reward function that checks if the completion has the correct format:
     - Must contain <think>...</think> and <answer>...</answer>
     - The <answer> content must be a valid JSON dict with keys "objects" and "relationships"
     """
-    task_type_list = task_type
     pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
 
     rewards = []
@@ -622,7 +619,7 @@ def format_reward(completions, image_id, task_type, **kwargs):
 
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Format Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Format Reward {reward:.3f} -------------\n")
                 f.write(f"image_id:{im_id}, content: {content}\n")
 
     return rewards
@@ -716,6 +713,7 @@ def main(script_args, training_args, model_args):
                 gt_objs = new_objs
 
                 task_type = random.choice(self.task_type).lower()
+                org_prompt = None
                 if task_type == 'sgg':
                     if self.use_predefined_cats:
                         org_prompt = example['prompt_close'] #w. predefined categories
@@ -756,7 +754,7 @@ def main(script_args, training_args, model_args):
                               "image": image, 
                               "solution": solution,
                               "image_id": example['image_id'],
-                              "task_type": task_type
+                              "task_type_list": task_type
                               })
 
             return batch
