@@ -415,6 +415,18 @@ class GRPOTrainerV2(Trainer):
         else:
             self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
 
+        if args.reward_warmup_steps is not None:
+            if len(args.reward_warmup_steps) != len(reward_funcs):
+                raise ValueError(
+                    f"Number of reward warmup steps ({len(args.reward_warmup_steps)}) must match number of reward "
+                    f"functions ({len(reward_funcs)})"
+                )
+            self.reward_warmup_steps = args.reward_warmup_steps
+            print(f"set reward_warmup_steps: {self.reward_warmup_steps}")
+        else:
+            self.reward_warmup_steps = None
+           
+
         # Reward processing class
         if reward_processing_classes is None:
             reward_processing_classes = [None] * len(reward_funcs)
@@ -915,7 +927,16 @@ class GRPOTrainerV2(Trainer):
                 f"All reward functions returned None for the following kwargs: {row_reward_kwargs}. "
                 "Please ensure that at least one reward function returns a valid reward."
             )                
-        rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        #rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        # Dynamic warm-up scaling
+        step = self.state.global_step
+        adjusted_weights = self.reward_weights.clone()
+        if self.reward_warmup_steps is not None:
+            for i, warmup in enumerate(self.reward_warmup_steps):
+                if warmup > 0:
+                    scale = min(1.0, step * 1.0 / warmup)
+                    adjusted_weights[i] *= scale
+        rewards = (rewards_per_func * adjusted_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
@@ -1251,7 +1272,16 @@ class GRPOTrainerV2(Trainer):
         rewards_per_func = gather(rewards_per_func)
 
         # Apply weights to each reward function's output and sum
-        rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        #rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        # Dynamic warm-up scaling
+        step = self.state.global_step
+        adjusted_weights = self.reward_weights.clone()
+        if self.reward_warmup_steps is not None:
+            for i, warmup in enumerate(self.reward_warmup_steps):
+                if warmup > 0:
+                    scale = min(1.0, step / warmup)
+                    adjusted_weights[i] *= scale
+        rewards = (rewards_per_func * adjusted_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
