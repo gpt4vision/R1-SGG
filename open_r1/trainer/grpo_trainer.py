@@ -859,7 +859,7 @@ class GRPOTrainerV2(Trainer):
                 self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
 
 
-        # Reset cache on main process
+        # Reset cache
         if self.vllm_client is not None:
             self.vllm_client.reset_prefix_cache()
 
@@ -1078,7 +1078,9 @@ class GRPOTrainerV2(Trainer):
                             guided_decoding_regex=self.guided_decoding_regex,
                         )
                 else:
-                     completion_ids = []
+                    completion_ids = []
+
+                self.accelerator.wait_for_everyone()
                 # gather from all processes
                 completion_ids = gather_object(completion_ids)
             else:
