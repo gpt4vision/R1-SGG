@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from tqdm import tqdm
 from collections import OrderedDict
+from functools import partial
 
 import torch
 #import torch._dynamo
@@ -672,7 +673,14 @@ def main(script_args, training_args, model_args):
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
-    print("len(dataset):", len(dataset))
+
+    def assign_task_type(example, task_pool, rng):
+        example["task_type"] = rng.choice(task_pool)
+        return example
+    
+    rng = random.Random(training_args.seed)  
+    dataset = dataset.map(partial(assign_task_type, task_pool=script_args.task_type, rng=rng))
+    print("len(dataset):", len(dataset), "with task_type:", script_args.task_type)
 
     def replace_answer_format(item: str) -> str:
         return item.replace("<answer>", "```json").replace("</answer>", "```")
@@ -712,8 +720,7 @@ def main(script_args, training_args, model_args):
                     new_objs.append(obj)
                 gt_objs = new_objs
 
-                task_type = random.choice(self.task_type).lower()
-                org_prompt = None
+                task_type = example['task_type'].lower()
                 if task_type == 'sgg':
                     if self.use_predefined_cats:
                         org_prompt = example['prompt_close'] #w. predefined categories
