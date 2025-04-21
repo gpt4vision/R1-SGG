@@ -42,7 +42,7 @@ import spacy
 from functools import lru_cache
 
 
-from trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER
+from trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PROMPT_SG
 
 # Set DEBUG_MODE flag and log path once
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -92,6 +92,10 @@ class GRPOScriptArguments(ScriptArguments):
     task_type: list[str] = field(
         default_factory=lambda: ["sgg"],
         metadata={"help": "List of tasks. Possible values: 'sgg', 'det', or 'cls'."}
+    )
+    use_think_prompt_inplace: bool = field(
+        default=False,
+        metadata={"help": "Whether to place <think>...</think> in the user's prompt."}
     )
 
 
@@ -583,8 +587,8 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                     
                     if match and graph_valid:
                         reward = 1.0
-                    #elif graph_valid:
-                    #    reward = 0.5 
+                    elif graph_valid:
+                        reward = 0.5 
                     else:
                         reward = 0.0
             elif task_type == 'det':
@@ -596,8 +600,8 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                             break
                     if match and obj_valid:
                         reward = 1.0
-                    #elif obj_valid:
-                    #    reward = 0.5
+                    elif obj_valid:
+                        reward = 0.5
                     else: 
                         reward = 0.0
             elif task_type == 'cls':
@@ -609,8 +613,8 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                             break
                     if match and rel_valid:
                         reward = 1.0
-                    #elif rel_valid:
-                    #    reward = 0.5
+                    elif rel_valid:
+                        reward = 0.5
                     else:
                         reward = 0.0 
             
@@ -686,10 +690,11 @@ def main(script_args, training_args, model_args):
         return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats, task_type=["sgg"]):
+        def __init__(self, processor, use_predefined_cats, task_type=["sgg"], use_think_prompt_inplace=False):
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self.task_type = task_type
+            self.use_think_prompt_inplace = use_think_prompt_inplace
 
         def __call__(self, examples):
             batch = []
@@ -729,13 +734,16 @@ def main(script_args, training_args, model_args):
 
                     org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
                     org_prompt = replace_answer_format(org_prompt)
+                    #     
+                    if self.use_think_prompt_inplace:
+                        org_prompt = PROMPT_SG
                 elif task_type == 'det':
                     org_prompt = PROMPT_DET
                 elif task_type == 'cls':
                     org_prompt = PROMPT_CLS.replace(OBJ_HOLDER, "[" + ",".join([json.dumps(e) for e in gt_objs_int]) + "]")
 
                 prompt = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": SYSTEM_PROMPT if not self.use_think_prompt_inplace else "You are a helpful and multimodal AI assistant."},
                     {
                         "role": "user",
                         "content": [
@@ -789,7 +797,10 @@ def main(script_args, training_args, model_args):
     processor.pad_token_id = pad_token_id
     processor.eos_token_id = processor.tokenizer.eos_token_id
 
-    collator_instance = Collator(processor, script_args.use_predefined_cats, script_args.task_type)
+    collator_instance = Collator(processor, 
+                                 use_predefined_cats=script_args.use_predefined_cats, 
+                                 task_type=script_args.task_type, 
+                                 use_think_prompt_inplace=script_args.use_think_prompt_inplace)
 
     print("*" * 100)
     print(f"rank={rank}, world size={world_size}, len(dataset)={len(dataset)}, dataset[0]:", collator_instance([dataset[0]]))

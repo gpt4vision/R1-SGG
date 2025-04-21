@@ -351,6 +351,7 @@ def main():
                 sub = rel['subject']
                 obj = rel['object']
                 predicate = rel['predicate'].replace('_', ' ').replace('-', ' ').strip().lower()
+                assert isinstance(sub, str) and isinstance(obj, str)
             except:
                 continue
 
