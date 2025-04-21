@@ -498,8 +498,8 @@ def format_reward(completions, image_id, **kwargs):
                 
                 if match and obj_valid:
                     reward = 1.0
-                #elif obj_valid:
-                #    reward = 0.5 
+                elif obj_valid:
+                    reward = 0.5 
                 else:
                     reward = 0.0
             
