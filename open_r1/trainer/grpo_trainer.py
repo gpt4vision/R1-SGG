@@ -1283,18 +1283,30 @@ class GRPOTrainerV2(Trainer):
                 if warmup > 0:
                     scale = min(1.0, step / warmup)
                     adjusted_weights[i] *= scale
-        rewards = (rewards_per_func * adjusted_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-        # Compute grouped-wise rewards
-        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+        if self.args.split_rewards:
+            rewards_per_func = rewards_per_func.view(-1, self.num_generations, len(self.reward_funcs))
+            mean_grouped_rewards = rewards_per_func.mean(dim=1, keepdim=True)
+            std_grouped_rewards = rewards_per_func.std(dim=1, keepdim=True)
+            
+            mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=1)
+            std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=1)
+            
+            rewards = rewards_per_func.nansum(dim=2)
+            advantages = ((rewards_per_func - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)).nansum(dim=2).view(-1)
+        else:
+            rewards = (rewards_per_func * adjusted_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-        # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        advantages = rewards - mean_grouped_rewards
-        if self.args.scale_rewards:
-            advantages = advantages / (std_grouped_rewards + 1e-4)
+            # Compute grouped-wise rewards
+            mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
+            std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+
+            # Normalize the rewards to compute the advantages
+            mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+            std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+            advantages = rewards - mean_grouped_rewards
+            if self.args.scale_rewards:
+                advantages = advantages / (std_grouped_rewards + 1e-4)
 
         # Slice to keep only the local part of the data
         process_slice = slice(
@@ -1325,6 +1337,7 @@ class GRPOTrainerV2(Trainer):
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
         self._metrics[mode]["reward_std_std"].append(std_grouped_rewards.std().item())
+        self._metrics[mode]["advantages"].append(advantages.mean().item())
 
 
         return {

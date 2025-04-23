@@ -48,6 +48,8 @@ from trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PRO
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 LOG_PATH = os.getenv("LOG_PATH", "debug.log")
 
+STRICT_FORMAT = os.getenv("STRICT_FORMAT", "false").lower() == "true"
+
 # Load spaCy model (with word vectors)
 try:
     nlp = spacy.load("en_core_web_sm")
@@ -63,6 +65,42 @@ BOX_L1_WEIGHT = 5.0
 FORMAT_REWARD_WEIGHT = 1.0 
 NODE_REWARD_WEIGHT = 2.0
 EDGE_REWARD_WEIGHT = 5.0 
+
+VG150_BASE_OBJ_CATEGORIES = set(['__background__', 'tile', 'drawer', 'men', 'railing', 'stand', 'towel', 'sneaker', 'vegetable', 'screen', 'vehicle', 'animal', 'kite', 'cabinet', 'sink', 'wire', 'fruit', 'curtain', 'lamp', 'flag', 'pot', 'sock', 'boot', 'guy', 'kid', 'finger', 'basket', 'wave', 'lady', 'orange', 'number', 'toilet', 'post', 'room', 'paper', 'mountain', 'paw', 'banana', 'rock', 'cup', 'hill', 'house', 'airplane', 'plant', 'skier', 'fork', 'box', 'seat', 'engine', 'mouth', 'letter', 'windshield', 'desk', 'board', 'counter', 'branch', 'coat', 'logo', 'book', 'roof', 'tie', 'tower', 'glove', 'sheep', 'neck', 'shelf', 'bottle', 'cap', 'vase', 'racket', 'ski', 'phone', 'handle', 'boat', 'tire', 'flower', 'child', 'bowl', 'pillow', 'player', 'trunk', 'bag', 'wing', 'light', 'laptop', 'pizza', 'cow', 'truck', 'jean', 'eye', 'arm', 'leaf', 'bird', 'surfboard', 'umbrella', 'food', 'people', 'nose', 'beach', 'sidewalk', 'helmet', 'face', 'skateboard', 'motorcycle', 'clock', 'bear'])
+
+VG150_BASE_PREDICATE = set(["__background__", "between", "to", "made of", "looking at", "along", "laying on", "using", "carrying", "against", "mounted on", "sitting on", "flying in", "covering", "from", "over", "near", "hanging from", "across", "at", "above", "watching", "covered in", "wearing", "holding", "and", "standing on", "lying on", "growing on", "under", "on back of", "with", "has", "in front of", "behind", "parked on"])
+
+
+def answer_to_ovdr(example):
+    objs = json.loads(example['objects'])
+    rels = json.loads(example['relationships'])
+    obj_map = {}
+    idx = 1 
+    new_objs = []
+    for obj in objs:
+        if obj['id'].split('.')[0] in VG150_BASE_OBJ_CATEGORIES:
+            new_name = '%s.%s'%(obj['id'].split('.')[0], idx)
+            obj_map[obj['id']] = new_name
+            idx += 1
+            tmp = {'id': new_name, 'bbox': obj['bbox']}
+            new_objs.append(tmp)
+    new_rels = []
+    for rel in rels:
+        if rel['predicate'] in VG150_BASE_PREDICATE and rel['subject'] in obj_map and rel['object'] in obj_map:
+            tmp = {"subject": obj_map[rel['subject']], "predicate": rel['predicate'], "object": obj_map[rel['object']]}
+            new_rels.append(tmp)
+
+    if len(new_objs) == 0 or len(new_rels) == 0:
+        return None  # mark for removal
+
+    example['objects'] = json.dumps(new_objs)
+    example['relationships'] = json.dumps(new_rels)
+    return example
+            
+    
+
+        
+
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -96,6 +134,10 @@ class GRPOScriptArguments(ScriptArguments):
     use_think_prompt_inplace: bool = field(
         default=False,
         metadata={"help": "Whether to place <think>...</think> in the user's prompt."}
+    )
+    use_ovdr_split: bool = field(
+        default=False,
+        metadata={"help": "Whether to use ovdr split for the dataset."}
     )
 
 
@@ -587,7 +629,7 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                     
                     if match and graph_valid:
                         reward = 1.0
-                    elif graph_valid:
+                    elif graph_valid and (not STRICT_FORMAT):
                         reward = 0.5 
                     else:
                         reward = 0.0
@@ -600,7 +642,7 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                             break
                     if match and obj_valid:
                         reward = 1.0
-                    elif obj_valid:
+                    elif obj_valid and (not STRICT_FORMAT):
                         reward = 0.5
                     else: 
                         reward = 0.0
@@ -613,7 +655,7 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                             break
                     if match and rel_valid:
                         reward = 1.0
-                    elif rel_valid:
+                    elif rel_valid and (not STRICT_FORMAT):
                         reward = 0.5
                     else:
                         reward = 0.0 
@@ -684,6 +726,9 @@ def main(script_args, training_args, model_args):
     
     rng = random.Random(training_args.seed)  
     dataset = dataset.map(partial(assign_task_type, task_pool=script_args.task_type, rng=rng))
+    if script_args.use_ovdr_split:
+        dataset = dataset.map(answer_to_ovdr, remove_columns=[], load_from_cache_file=False)
+        dataset = dataset.filter(lambda x: x is not None)
     print("len(dataset):", len(dataset), "with task_type:", script_args.task_type)
 
     def replace_answer_format(item: str) -> str:
