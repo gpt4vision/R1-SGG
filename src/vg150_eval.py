@@ -12,21 +12,34 @@ VG150_OBJ_CATEGORIES = ['__background__', 'airplane', 'animal', 'arm', 'bag', 'b
 VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"]
 
 
-NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
 
 
 class MyDataset(object):
-    def __init__(self, db):
+    def __init__(self, db, db_type='vg150'):
         self._coco = None
+        self.db_type = db_type 
+        assert self.db_type in ['vg150', 'psg']
         
-        self.ind_to_classes = VG150_OBJ_CATEGORIES
-        self.ind_to_predicates = VG150_PREDICATES
-        self.name2classes = {name: cls for cls, name in enumerate(self.ind_to_classes) if name != "__background__"}
-        self.categories = [{'supercategory': 'none', # not used?
-                            'id': idx, 
-                            'name': self.ind_to_classes[idx]}  
-                            for idx in range(len(self.ind_to_classes)) if self.ind_to_classes[idx] != '__background__'
-                            ]
+        if self.db_type == 'vg150':
+            self.ind_to_classes = VG150_OBJ_CATEGORIES
+            self.ind_to_predicates = VG150_PREDICATES
+            self.name2classes = {name: cls for cls, name in enumerate(self.ind_to_classes) if name != "__background__"}
+            self.categories = [{'supercategory': 'none', # not used?
+                                'id': idx, 
+                                'name': self.ind_to_classes[idx]}  
+                                for idx in range(len(self.ind_to_classes)) if self.ind_to_classes[idx] != '__background__'
+                                ]
+        elif self.db_type == 'psg':
+            psg_categories = json.load(open("src/psg_categories.json"))
+            PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+            PSG_PREDICATES = psg_categories['predicate_classes']
+            self.ind_to_classes = PSG_OBJ_CATEGORIES
+            self.categories = [{'supercategory': 'none', # not used?
+                                'id': idx, 
+                                'name': self.ind_to_classes[idx]}  
+                                for idx in range(len(self.ind_to_classes)) if self.ind_to_classes[idx] != '__background__'
+                                ]
+            
 
         self.images = []
         self.annotations = []
@@ -108,11 +121,13 @@ if __name__ == "__main__":
     from datasets import load_dataset
     import torch
 
-    preds = json.load(open(sys.argv[1]))
-    db = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+    preds = json.load(open(sys.argv[2]))
+    db = load_dataset(sys.argv[1])['train']
     dataset = MyDataset(db)
 
-    sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), num_workers=4)
+    sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), 
+                                 num_workers=4, 
+                                 num_rel_category=len(dataset.ind_to_predicates))
 
     def to_torch(item):
         for k in item.keys():

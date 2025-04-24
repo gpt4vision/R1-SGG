@@ -19,7 +19,6 @@ import matplotlib.pyplot as plt
 
 VG150_OBJ_CATEGORIES = ['__background__', 'airplane', 'animal', 'arm', 'bag', 'banana', 'basket', 'beach', 'bear', 'bed', 'bench', 'bike', 'bird', 'board', 'boat', 'book', 'boot', 'bottle', 'bowl', 'box', 'boy', 'branch', 'building', 'bus', 'cabinet', 'cap', 'car', 'cat', 'chair', 'child', 'clock', 'coat', 'counter', 'cow', 'cup', 'curtain', 'desk', 'dog', 'door', 'drawer', 'ear', 'elephant', 'engine', 'eye', 'face', 'fence', 'finger', 'flag', 'flower', 'food', 'fork', 'fruit', 'giraffe', 'girl', 'glass', 'glove', 'guy', 'hair', 'hand', 'handle', 'hat', 'head', 'helmet', 'hill', 'horse', 'house', 'jacket', 'jean', 'kid', 'kite', 'lady', 'lamp', 'laptop', 'leaf', 'leg', 'letter', 'light', 'logo', 'man', 'men', 'motorcycle', 'mountain', 'mouth', 'neck', 'nose', 'number', 'orange', 'pant', 'paper', 'paw', 'people', 'person', 'phone', 'pillow', 'pizza', 'plane', 'plant', 'plate', 'player', 'pole', 'post', 'pot', 'racket', 'railing', 'rock', 'roof', 'room', 'screen', 'seat', 'sheep', 'shelf', 'shirt', 'shoe', 'short', 'sidewalk', 'sign', 'sink', 'skateboard', 'ski', 'skier', 'sneaker', 'snow', 'sock', 'stand', 'street', 'surfboard', 'table', 'tail', 'tie', 'tile', 'tire', 'toilet', 'towel', 'tower', 'track', 'train', 'tree', 'truck', 'trunk', 'umbrella', 'vase', 'vegetable', 'vehicle', 'wave', 'wheel', 'window', 'windshield', 'wing', 'wire', 'woman', 'zebra']
 
-NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
 
 VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"]
 
@@ -241,6 +240,15 @@ def visualize_assignments(image, pred_objs, gt_objs, assignments, filename,
 
 def main():
     json_folder = sys.argv[1] 
+    is_psg = 'psg' in json_folder
+    if is_psg:
+        psg_categories = json.load(open("src/psg_categories.json"))
+        PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+        PSG_PREDICATES = psg_categories['predicate_classes']
+        NAME2CAT = {name: idx for idx, name in enumerate(PSG_OBJ_CATEGORIES)}
+    else:
+        NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
+
 
     pred_files = glob.glob(os.path.join(json_folder, "*json"))
     preds = []
@@ -251,8 +259,10 @@ def main():
     is_qwen2vl = True # normalize bbox to [0, 1000]
     print("is_qwen2vl:", is_qwen2vl)
     if is_qwen2vl:
-        # Load the dataset and convert to a dict for faster lookup.
-        db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+        if not is_psg:
+            db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+        else:
+            db_raw = load_dataset("JosephZ/psg_test_sg")['train']
         db = {e['image_id']: e for e in tqdm(db_raw, desc="Loading dataset")}
 
     pass2act = json.load(open("src/pass2act.json"))
@@ -278,8 +288,6 @@ def main():
         if is_qwen2vl: # for Qwen2VL, the output is normalized to [0, 1000]
             iw, ih = image.size
             scale_factors = (iw / 1000.0, ih / 1000.0)
-            # Uncomment the following line to log image details if necessary
-            # print("image id:", im_id, " image size:", image.size)
     
         gt_objs = json.loads(item['gt_objects'])
         gt_rels = json.loads(item['gt_relationships'])
@@ -297,6 +305,7 @@ def main():
                 assert len(obj['bbox']) == 4, "len(obj['bbox']) != 4"
                 assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
                 assert 'id' in obj, "invalid obj:{}".format(obj)
+                assert isinstance(obj['id'], str), f"invalid obj:{obj}"
 
             new_pred_rels = []
             for rel in pred_rels:
@@ -326,7 +335,9 @@ def main():
             cats.append(cat)
             if cat not in map_db:
                 # Cache new synonym mapping if missing
-                db_ = find_synonym_map([cat], VG150_OBJ_CATEGORIES[1:])
+                db_ = find_synonym_map([cat], VG150_OBJ_CATEGORIES[1:] if not is_psg else PSG_OBJ_CATEGORIES
+                                      )
+                 
                 if len(db_) > 0:
                     print("Add a mapping:", db_)
                 map_db.update(db_)
@@ -367,14 +378,22 @@ def main():
                 sid = names.index(sub)
                 oid = names.index(obj)
                 if predicate not in map_db_rel:
-                    map_db_rel.update(find_synonym_map([predicate], VG150_PREDICATES[1:]))
+                    map_db_rel.update(find_synonym_map([predicate], 
+                                                        VG150_PREDICATES[1:] if not is_psg else PSG_PREDICATES
+                                                      ))
+
                 rel_cats.append(predicate)
                 if predicate in map_db_rel:
                     new_predicate = map_db_rel[predicate]
-                    triplet = [sid, oid, VG150_PREDICATES.index(new_predicate)]
+                    triplet = [sid, oid, 
+                               VG150_PREDICATES.index(new_predicate) if not is_psg else 1 + PSG_PREDICATES.index(new_predicate)
+                              ]
                     all_node_pairs.append([sid, oid])
 
-                    tmp = [0]*len(VG150_OBJ_CATEGORIES)
+                    if not is_psg: 
+                        tmp = [0]*len(VG150_PREDICATES) 
+                    else:
+                        tmp = [0]*(len(PSG_PREDICATES) + 1)
                     tmp[triplet[-1]] = 1
                     all_relation.append(tmp)
 
@@ -396,14 +415,15 @@ def main():
 
     cats = list(set(cats))
     print("fails:", fails)
-    print("failure rate:", fails[0]/fails[1]*100.0)
+    print("failure rate:", round(fails[0]/fails[1]*100.0, 4))
     print("Number of valid predictions:", len(preds_dict))
     for im_id in all_im_ids:
         pred_objs_dict = {"image_id": im_id, "boxes": torch.randn(1, 4).tolist(), "labels": [0], "scores": [0], "names": ["unknown"]}
         if im_id not in preds_dict:
             preds_dict[im_id] = pred_objs_dict
+            NUM_RELS = len(VG150_PREDICATES) if not is_psg else len(PSG_PREDICATES) + 1
             preds_dict[im_id]['graph'] = {'all_node_pairs': torch.zeros(1, 2).long().tolist(),
-                                          'all_relation': torch.zeros(1, 51).tolist(),
+                                          'all_relation': torch.zeros(1, NUM_RELS).tolist(),
                                           'pred_boxes': pred_objs_dict['boxes'],
                                           'pred_boxes_class': pred_objs_dict['labels'],
                                           'pred_boxes_score': pred_objs_dict['scores']}
