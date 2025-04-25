@@ -12,6 +12,19 @@ VG150_OBJ_CATEGORIES = ['__background__', 'airplane', 'animal', 'arm', 'bag', 'b
 VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"]
 
 
+def compute_iou(boxA, boxB):
+    # box format: [x1, y1, x2, y2]
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interWidth = max(0, xB - xA)
+    interHeight = max(0, yB - yA)
+    interArea = interWidth * interHeight
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    unionArea = boxAArea + boxBArea - interArea
+    return 0.0 if unionArea == 0 else interArea / unionArea
 
 
 class MyDataset(object):
@@ -34,6 +47,8 @@ class MyDataset(object):
             PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
             PSG_PREDICATES = psg_categories['predicate_classes']
             self.ind_to_classes = PSG_OBJ_CATEGORIES
+            self.ind_to_predicates = ['__background__'] + PSG_PREDICATES
+            self.name2classes = {name: cls for cls, name in enumerate(self.ind_to_classes) if name != "__background__"}
             self.categories = [{'supercategory': 'none', # not used?
                                 'id': idx, 
                                 'name': self.ind_to_classes[idx]}  
@@ -120,10 +135,43 @@ if __name__ == "__main__":
     import json
     from datasets import load_dataset
     import torch
+    from collections import defaultdict
 
     preds = json.load(open(sys.argv[2]))
     db = load_dataset(sys.argv[1])['train']
-    dataset = MyDataset(db)
+    db_type = 'vg150' if 'psg' not in sys.argv[1] else 'psg'
+    dataset = MyDataset(db, db_type)
+
+    ngR = []
+    mR = defaultdict(list)
+    for gt in tqdm(db):
+        im_id = gt['image_id']
+        pred = preds[im_id]
+        gt_rels = json.loads(gt['relationships'])
+        gt_boxes = {obj['id']: obj['bbox'] for obj in json.loads(gt['objects'])}
+        for gt_rel in gt_rels:
+             match = False
+             for pred_rel in pred['relation_tuples']:
+                 if gt_rel['predicate'] != pred_rel[2]:
+                     continue
+                 if gt_rel['subject'].split('.')[0] != pred['names_target'][pred_rel[0]].split('.')[0] or\
+                    gt_rel['object'].split('.')[0] != pred['names_target'][pred_rel[1]].split('.')[0]:
+                     continue
+                 sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred['boxes'][pred_rel[0]])
+                 obj_iou = compute_iou(gt_boxes[gt_rel['object']], pred['boxes'][pred_rel[1]])
+                 if sub_iou >= 0.5 and obj_iou >= 0.5:
+                     match = True
+                     break
+             ngR.append(match)
+             mR[gt_rel['predicate']].append(match)
+ 
+    mR_list = []
+    for k in mR.keys():
+        tmp = round(sum(mR[k]) / len(mR[k]), 4)
+        mR_list.append((k, tmp))
+        
+                 
+
 
     sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), 
                                  num_workers=4, 
@@ -154,3 +202,8 @@ if __name__ == "__main__":
     sgg_res = sgg_evaluator.accumulate()
     sgg_evaluator.summarize()
     sgg_evaluator.reset()
+
+
+    print("ng recall list:", mR_list)
+    print(f'ngR: {sum(ngR) / len(ngR) * 100:.2f}')
+    print(f'mR: {sum([e[1] for e in mR_list]) / len(mR_list) * 100:.2f}')

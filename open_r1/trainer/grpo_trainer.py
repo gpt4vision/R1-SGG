@@ -308,7 +308,8 @@ class GRPOTrainerV2(Trainer):
         max_pixels: Optional[int] = 12845056,
         min_pixels: Optional[int] = 3136,        
         data_collator=None,
-        model_type: str = "qwen2vl"
+        model_type: str = "qwen2vl",
+        self_evaluation: Optional[Callable[[list[Any]], Any]] = None,
     ):
         # Args
         if args is None:
