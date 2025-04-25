@@ -168,7 +168,9 @@ def extract_answer_content(text: str) -> str:
     return match.group(1).strip() if match else text
 
 def refine_node_edge(obj):
-    return obj.replace("_", " ").replace("-", " ").lower()
+    obj = obj.replace("_", " ").replace("-", " ")
+    obj = obj.replace('-merged', '').replace('-other', '')
+    return obj.strip().lower()
 
 
 @lru_cache(maxsize=4096)

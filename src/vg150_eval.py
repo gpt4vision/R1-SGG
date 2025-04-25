@@ -2,6 +2,7 @@ from tqdm import tqdm
 import numpy as np
 import copy
 
+import torch
 from pycocotools.coco import COCO
 
 from src.utils.sgg_eval import SggEvaluator
@@ -128,6 +129,10 @@ class MyDataset(object):
 
         return self._coco
 
+def refine_node_edge(obj):
+    obj = obj.replace("_", " ").replace("-", " ")
+    obj = obj.replace('-merged', '').replace('-other', '')
+    return obj.strip().lower()
 
 if __name__ == "__main__":
     import os
@@ -142,35 +147,59 @@ if __name__ == "__main__":
     db_type = 'vg150' if 'psg' not in sys.argv[1] else 'psg'
     dataset = MyDataset(db, db_type)
 
+
+    def refine_node(name):
+        return name.replace('-merged', '').replace('-other', '').strip()
+
+
     ngR = []
     mR = defaultdict(list)
+    ngR_per_image = []
+    mR_per_image = defaultdict(list)
+    num_gt_rels = 0
     for gt in tqdm(db):
         im_id = gt['image_id']
         pred = preds[im_id]
         gt_rels = json.loads(gt['relationships'])
-        gt_boxes = {obj['id']: obj['bbox'] for obj in json.loads(gt['objects'])}
+        gt_objects = json.loads(gt['objects'])
+        gt_boxes = {obj['id']: obj['bbox'] for obj in gt_objects}
+        recall = []
+        recall_per_cat = defaultdict(list)
         for gt_rel in gt_rels:
+             num_gt_rels += 1
              match = False
+             gt_pred = refine_node_edge(gt_rel['predicate'])
              for pred_rel in pred['relation_tuples']:
-                 if gt_rel['predicate'] != pred_rel[2]:
+                 if gt_pred != refine_node_edge(pred_rel[-1]):
                      continue
-                 if gt_rel['subject'].split('.')[0] != pred['names_target'][pred_rel[0]].split('.')[0] or\
-                    gt_rel['object'].split('.')[0] != pred['names_target'][pred_rel[1]].split('.')[0]:
+                 if refine_node_edge(gt_rel['subject'].split('.')[0]) != refine_node_edge(pred_rel[0].split('.')[0]) or \
+                    refine_node_edge(gt_rel['object'].split('.')[0]) != refine_node_edge(pred_rel[2].split('.')[0]):
                      continue
-                 sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred['boxes'][pred_rel[0]])
-                 obj_iou = compute_iou(gt_boxes[gt_rel['object']], pred['boxes'][pred_rel[1]])
+
+                 sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_rel[1])
+                 obj_iou = compute_iou(gt_boxes[gt_rel['object']],  pred_rel[3])
                  if sub_iou >= 0.5 and obj_iou >= 0.5:
                      match = True
                      break
+
+             recall.append(match)
              ngR.append(match)
-             mR[gt_rel['predicate']].append(match)
- 
+             mR[gt_pred].append(match)
+             recall_per_cat[gt_pred].append(match)
+
+        if len(recall) > 0: 
+             ngR_per_image.append(sum(recall) / len(recall) )
+
+        for k in recall_per_cat.keys():
+             mR_per_image[k].append(sum(recall_per_cat[k]) / len(recall_per_cat[k]) )
+        
     mR_list = []
     for k in mR.keys():
-        tmp = round(sum(mR[k]) / len(mR[k]), 4)
+        tmp = round(np.mean(mR[k]), 4)
         mR_list.append((k, tmp))
-        
                  
+    ngR_per_image = np.mean(ngR_per_image)
+    mR_per_image = [(cat, round(np.mean(mR_per_image[cat]), 4) ) for cat in mR_per_image.keys()]
 
 
     sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), 
@@ -204,6 +233,9 @@ if __name__ == "__main__":
     sgg_evaluator.reset()
 
 
-    print("ng recall list:", mR_list)
-    print(f'ngR: {sum(ngR) / len(ngR) * 100:.2f}')
-    print(f'mR: {sum([e[1] for e in mR_list]) / len(mR_list) * 100:.2f}')
+    print("whole ng recall list:", mR_list)
+    print(f'whole ngR: {np.mean(ngR) * 100:.2f}')
+    print(f'whole mean of ngR: {sum([e[1] for e in mR_list]) / len(mR_list) * 100:.2f}')
+    print(f'ngR per image:{ngR_per_image * 100:.2f}')
+    print(f'mean ngR per image: {sum([e[1] for e in mR_per_image]) / len(mR_per_image) * 100:.2f}')
+    print(f'mean ngR list:{mR_per_image}')

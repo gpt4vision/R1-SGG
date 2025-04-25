@@ -149,7 +149,9 @@ def extract_answer_content(text: str) -> str:
 
 
 def refine_node_edge(obj):
-    return obj.replace("_", " ").replace("-", " ").strip().lower()
+    obj = obj.replace("_", " ").replace("-", " ")
+    obj = obj.replace('-merged', '').replace('-other', '')
+    return obj.strip().lower()
 
 def scale_box(box, scale):
     sw, sh = scale
@@ -270,6 +272,8 @@ def main():
         PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
         PSG_PREDICATES = psg_categories['predicate_classes']
         NAME2CAT = {name: idx for idx, name in enumerate(PSG_OBJ_CATEGORIES)}
+        
+        psg_synoyms = get_synonyms("src/psg_synonyms.txt")
     else:
         NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
 
@@ -337,6 +341,9 @@ def main():
                 assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
                 assert 'id' in obj, "invalid obj:{}".format(obj)
                 assert isinstance(obj['id'], str), f"invalid obj:{obj}"
+                if is_qwen2vl:
+                    obj['bbox'] = scale_box(obj['bbox'], scale_factors)
+
                 pred_objs_.append({'id': refine_node_edge(obj['id']), 'bbox': obj['bbox']})
             pred_objs = pred_objs_
 
@@ -356,9 +363,6 @@ def main():
 
         pred_objs_dict = {"image_id": im_id, "boxes": [], "labels": [], "scores": [], "names": [], "names_target":[]}
         for e in pred_objs:
-            if is_qwen2vl:
-                e['bbox'] = scale_box(e['bbox'], scale_factors)
-
             org_name = e['id']
             cat = org_name.split('.')[0]
             cats.append(cat)
@@ -406,11 +410,13 @@ def main():
                     sub_ = sub
                     sub = obj
                     obj = sub_ 
+                
 
             if sub in names_set and obj in names_set:
                 sid = names.index(sub)
                 oid = names.index(obj)
-                if predicate not in target_predicates and predicate not in map_rel2target:
+
+                if (predicate not in target_predicates) and (predicate not in map_rel2target):
                     rel_syn = find_synonym_map([predicate], target_predicates[1:])
                     map_rel2target.update(rel_syn)
 
@@ -418,7 +424,10 @@ def main():
                     predicate = map_rel2target[predicate]
                    
                 if predicate in target_predicates:
-                    relation_tuples.append([sid, oid, predicate])
+                    relation_tuples.append([sub.split('.')[0], pred_objs_dict['boxes'][sid], 
+                                            obj.split('.')[0], pred_objs_dict['boxes'][oid],
+                                            predicate])
+
                     triplet = [sid, oid, 
                                target_predicates.index(predicate) 
                               ]
@@ -450,7 +459,7 @@ def main():
     print("failure rate:", round(fails[0]/fails[1]*100.0, 4))
     print("Number of valid predictions:", len(preds_dict))
     for im_id in all_im_ids:
-        pred_objs_dict = {"image_id": im_id, "boxes": torch.randn(1, 4).tolist(), "labels": [0], "scores": [0], "names": ["unknown"], "names_target":["unknown"]}
+        pred_objs_dict = {"image_id": im_id, "boxes": torch.empty(1, 4).tolist(), "labels": [0], "scores": [0], "names": ["unknown"], "names_target":["unknown"]}
         if im_id not in preds_dict:
             preds_dict[im_id] = pred_objs_dict
             preds_dict[im_id]['relation_tuples'] = []
