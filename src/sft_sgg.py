@@ -42,6 +42,7 @@ from trl import (
 
 from qwen_vl_utils import process_vision_info
 
+from open_r1.trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PROMPT_SG, PROMPT_SG_OPEN
 
 
 
@@ -78,9 +79,24 @@ def format_answer(objects:str, relationships:str, shuffle=False):
             new_rels.append(tmp)
         objects, relationships = new_objects, new_rels
 
+    obj_map = {}
+    objects_ = []
+    for obj in objects:
+        new_name= obj['id'].replace('-merged', '').replace('-other', '').replace('-', ' ').replace('_', ' ')
+        obj_map[obj['id']] = new_name
+        objects_.append({'id': new_name, 'bbox': obj['bbox']})
+    objects = objects_ 
+    rels_ = []
+    for rel in relationships:
+        tmp = {'subject': obj_map[rel['subject']], 
+               'predicate': rel['predicate'].replace('-', ' ').replace('_', ' '), 
+               'object': obj_map[rel['object']]}
+        rels_.append(tmp)
+    relationships = rels_    
 
     objects = [json.dumps(e) for e in objects]
     relationships = [json.dumps(e) for e in relationships]
+    
 
     # Format structured answer
     structured_answer = (
@@ -105,7 +121,7 @@ def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=T
     if use_predefined_cats:
         prompt = sample['prompt_close'] # w. pre-defined categories
     else:
-        prompt = sample['prompt_open'] 
+        prompt = sample['prompt_open'] if 'prompt_open' in sample else PROMPT_SG_OPEN
 
     if remove_image_size_in_prompt:
         prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")

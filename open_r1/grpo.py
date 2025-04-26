@@ -119,9 +119,9 @@ class GRPOScriptArguments(ScriptArguments):
         reward_funcs (`list[str]`):
             List of reward functions. Possible values: 'accuracy', 'format'.
     """
-    reward_funcs: list[str] = field(
-        default_factory=lambda: ["accuracy", "format"],
-        metadata={"help": "List of reward functions. Possible values: 'accuracy', 'format'"},
+    reward_funcs: Optional[list[str]] = field(
+        default=None,
+        metadata={"help": "List of reward functions. Possible values: 'accuracy', 'format'."},
     )
     max_pixels: Optional[int] = field(
         default=12845056,
@@ -168,8 +168,8 @@ def extract_answer_content(text: str) -> str:
     return match.group(1).strip() if match else text
 
 def refine_node_edge(obj):
-    obj = obj.replace("_", " ").replace("-", " ")
     obj = obj.replace('-merged', '').replace('-other', '')
+    obj = obj.replace("_", " ").replace("-", " ")
     return obj.strip().lower()
 
 
@@ -588,6 +588,7 @@ def node_box_reward(completions, solution, image_id, task_type_list, **kwargs):
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
+
 def edge_reward(completions, solution, image_id,  task_type_list, **kwargs):
     """Compute edge-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
@@ -822,7 +823,9 @@ def scale_box(box, scale):
 
 
 def main(script_args, training_args, model_args):
-    script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
+    if script_args.reward_funcs is None:
+        script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
+
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']

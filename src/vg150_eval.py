@@ -130,8 +130,8 @@ class MyDataset(object):
         return self._coco
 
 def refine_node_edge(obj):
-    obj = obj.replace("_", " ").replace("-", " ")
     obj = obj.replace('-merged', '').replace('-other', '')
+    obj = obj.replace("_", " ").replace("-", " ")
     return obj.strip().lower()
 
 if __name__ == "__main__":
@@ -148,8 +148,6 @@ if __name__ == "__main__":
     dataset = MyDataset(db, db_type)
 
 
-    def refine_node(name):
-        return name.replace('-merged', '').replace('-other', '').strip()
 
 
     ngR = []
@@ -159,28 +157,33 @@ if __name__ == "__main__":
     num_gt_rels = 0
     for gt in tqdm(db):
         im_id = gt['image_id']
-        pred = preds[im_id]
+        if im_id in preds: # to prevent wrong generated image_id
+            pred = preds[im_id]
+        else:
+            pred = None
         gt_rels = json.loads(gt['relationships'])
         gt_objects = json.loads(gt['objects'])
         gt_boxes = {obj['id']: obj['bbox'] for obj in gt_objects}
         recall = []
         recall_per_cat = defaultdict(list)
+
         for gt_rel in gt_rels:
              num_gt_rels += 1
              match = False
              gt_pred = refine_node_edge(gt_rel['predicate'])
-             for pred_rel in pred['relation_tuples']:
-                 if gt_pred != refine_node_edge(pred_rel[-1]):
-                     continue
-                 if refine_node_edge(gt_rel['subject'].split('.')[0]) != refine_node_edge(pred_rel[0].split('.')[0]) or \
-                    refine_node_edge(gt_rel['object'].split('.')[0]) != refine_node_edge(pred_rel[2].split('.')[0]):
-                     continue
+             if pred is not None:
+                 for pred_rel in pred['relation_tuples']:
+                     if gt_pred != refine_node_edge(pred_rel[-1]):
+                         continue
+                     if refine_node_edge(gt_rel['subject'].split('.')[0]) != refine_node_edge(pred_rel[0].split('.')[0]) or \
+                        refine_node_edge(gt_rel['object'].split('.')[0]) != refine_node_edge(pred_rel[2].split('.')[0]):
+                         continue
 
-                 sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_rel[1])
-                 obj_iou = compute_iou(gt_boxes[gt_rel['object']],  pred_rel[3])
-                 if sub_iou >= 0.5 and obj_iou >= 0.5:
-                     match = True
-                     break
+                     sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_rel[1])
+                     obj_iou = compute_iou(gt_boxes[gt_rel['object']],  pred_rel[3])
+                     if sub_iou >= 0.5 and obj_iou >= 0.5:
+                         match = True
+                         break
 
              recall.append(match)
              ngR.append(match)
