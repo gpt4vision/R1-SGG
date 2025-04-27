@@ -150,7 +150,6 @@ def extract_answer_content(text: str) -> str:
 
 def refine_node_edge(obj):
     obj = obj.replace("_", " ").replace("-", " ")
-    obj = obj.replace('-merged', '').replace('-other', '')
     return obj.strip().lower()
 
 def scale_box(box, scale):
@@ -270,10 +269,10 @@ def main():
     if is_psg:
         psg_categories = json.load(open("src/psg_categories.json"))
         PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+        PSG_OBJ_CATEGORIES = [refine_node_edge(e) for e in PSG_OBJ_CATEGORIES] # remove '-', '_' 
         PSG_PREDICATES = psg_categories['predicate_classes']
         NAME2CAT = {name: idx for idx, name in enumerate(PSG_OBJ_CATEGORIES)}
-        
-        psg_synoyms = get_synonyms("src/psg_synonyms.txt")
+        print("PSG_OBJ_CATEGORIES:\n", PSG_OBJ_CATEGORIES, "\n")    
     else:
         NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
 

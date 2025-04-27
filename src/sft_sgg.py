@@ -79,20 +79,6 @@ def format_answer(objects:str, relationships:str, shuffle=False):
             new_rels.append(tmp)
         objects, relationships = new_objects, new_rels
 
-    obj_map = {}
-    objects_ = []
-    for obj in objects:
-        new_name= obj['id'].replace('-merged', '').replace('-other', '').replace('-', ' ').replace('_', ' ')
-        obj_map[obj['id']] = new_name
-        objects_.append({'id': new_name, 'bbox': obj['bbox']})
-    objects = objects_ 
-    rels_ = []
-    for rel in relationships:
-        tmp = {'subject': obj_map[rel['subject']], 
-               'predicate': rel['predicate'].replace('-', ' ').replace('_', ' '), 
-               'object': obj_map[rel['object']]}
-        rels_.append(tmp)
-    relationships = rels_    
 
     objects = [json.dumps(e) for e in objects]
     relationships = [json.dumps(e) for e in relationships]

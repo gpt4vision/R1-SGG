@@ -1,11 +1,11 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=2B_bs32_gh200
+#SBATCH --job-name=2B_bs32_gh200_lr6e-7_refmodel
 #SBATCH --time=12:00:00
 
-#SBATCH --nodes=2  # 2 nodes, each has 4x GH200                   
-#SBATCH --ntasks=2                   # Total tasks equals total nodes
+#SBATCH --nodes=4  # 2 nodes, each has 4x GH200                   
+#SBATCH --ntasks=4                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=288 # fixed for GH200
@@ -26,13 +26,16 @@ GPUS_PER_NODE=4
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-2b-grpo-g${GROUP_SIZE}-n1-temp1-topk50-bs32-gh200"
+RUN_NAME="qwen2vl-2b-grpo-g8-n1-sgg-bs32-lr6e-7-ref-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
 MAX_PIXELS=$((512 * 28 * 28))
 
+REF_MODEL_NAME=$1
 export LOG_PATH=${OUTPUT_DIR}/debug.log
+
+export STRICT_FORMAT=False
 
 MASTER_PORT=29500
 
@@ -50,14 +53,16 @@ echo "Head Node IP: $HEAD_NODE_IP"
 #  batch size: PER_DEVICE(16) * ACC(2) *  GPU (4) * NODE(2) // GROUP_SIZE(8) = 32
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
+    --task_type sgg \
+    --ref_model_name ${REF_MODEL_NAME} \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
     --max_completion_length 1024 \
     --custom_per_device_train_batch_size 16 \
     --deepspeed ./local_scripts/zero2_offload.json \
-    --gradient_accumulation_steps 2 \
-    --learning_rate 3e-7 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 6e-7 \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\
@@ -74,10 +79,10 @@ TRAIN_CMD="open_r1/grpo.py \
     --save_steps 100 \
     --num_generations ${GROUP_SIZE} \
     --num_iterations 1 \
-    --beta 0.0\
+    --beta 0.04 \
     --vllm_max_model_len 4096 \
     --vllm_gpu_memory_utilization 0.2 \
-    --save_only_model false \
+    --save_only_model true \
     --seed 42"
 
     

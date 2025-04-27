@@ -1,11 +1,11 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=7B_GH200_SFT_CLOSE_GRPO
+#SBATCH --job-name=7B_GH200_SFT_CLOSE_GRPO_lr2x
 #SBATCH --time=12:00:00
 
-#SBATCH --nodes=4  # 4 nodes, each has 4x GH200                   
-#SBATCH --ntasks=4                   # Total tasks equals total nodes
+#SBATCH --nodes=8  # 8 nodes, each has 4x GH200                   
+#SBATCH --ntasks=8                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=288 # fixed for GH200
@@ -16,6 +16,7 @@
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
+set -x
 # ---------- Environment Setup ----------
 export NCCL_ASYNC_ERROR_HANDLING=1
 export DEBUG_MODE=True
@@ -27,11 +28,12 @@ GROUP_SIZE=8
 MODEL_PATH=$1
 
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-sft-grpo-g${GROUP_SIZE}-n1-bs32-close-gh200"
-export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
+RUN_NAME="qwen2vl-7b-sft-grpo-g8-n1-bs32-close-lr6e-7-gh200"
+export OUTPUT_DIR="${SCRATCH}/models/7B/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
 export LOG_PATH=${OUTPUT_DIR}/debug.log
+export STRICT_FORMAT=True
 
 MAX_PIXELS=$((512 * 28 * 28))
 
@@ -42,10 +44,9 @@ NODELIST=($(scontrol show hostnames $SLURM_JOB_NODELIST))
 NUM_TRAIN_NODES=${#NODELIST[@]}
 TRAIN_NODES_LIST=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 
-# Choose the first training node as the rendezvous head node
-HEAD_NODE=${TRAIN_NODES_LIST[0]}
-HEAD_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
-echo "Head Node IP: $HEAD_NODE_IP"
+
+MASTER_ADDR=$(scontrol show hostnames $SLURM_NODELIST | head -n 1)
+echo "MASTER_ADDR: $MASTER_ADDR"
 
 
 
@@ -64,8 +65,8 @@ TRAIN_CMD="open_r1/grpo.py \
     --max_completion_length 1024 \
     --custom_per_device_train_batch_size 8 \
     --deepspeed ./local_scripts/zero2_offload.json \
-    --gradient_accumulation_steps 2 \
-    --learning_rate 3e-7 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 6e-7 \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\
@@ -86,15 +87,15 @@ TRAIN_CMD="open_r1/grpo.py \
     --vllm_max_model_len 4096 \
     --vllm_gpu_memory_utilization 0.2 \
     --use_predefined_cats true \
+    --ddp_timeout 3600 \
     --save_only_model false"
 
     
 echo "start training with TRAIN_CMD=${TRAIN_CMD} ..."
 
-srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
-    torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
+srun torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
     --node_rank ${SLURM_NODEID} \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
-    --rdzv_endpoint ${HEAD_NODE_IP}:${MASTER_PORT} \
+    --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
     ${TRAIN_CMD}
