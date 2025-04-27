@@ -1,6 +1,7 @@
 # R1-SGG: Compile Scene Graphs with Reinforcement Learning
 
 ## Update
+- [x] support the [PSG](https://github.com/Jingkang50/OpenPSG) dataset (note that we only keep bbox format instead of Panoptic)
 - [x] update the loss implementation
 - [x] always set ``custom_per_device_train_batch_size`` instead of ``per_device_train_batch_size``, since the sampling will be performed for a whole batch data to speed up the training when gradient accumulation steps > 1.
 - [ ] current loss implementation might be affected by gradient accumulation: https://github.com/huggingface/trl/issues/3021
@@ -24,7 +25,15 @@ from datasets import load_dataset
 db_train = load_dataset("JosephZ/vg150_train_sgg_prompt")["train"]
 db_val = load_dataset("JosephZ/vg150_val_sgg_prompt")["train"]
 ```
+or 
+```
+db_train = load_dataset("JosephZ/psg_train_sg")["train"] # keys: image_id, image, objects, relationships
+db_val = load_dataset("JosephZ/psg_test_sg")["train"] # keys: image_id, image, objects, relationships
+```
 we transformed VG150 into datasets format with keys: "image_id", "image", "prompt_open", "prompt_close", "objects", and "relationships".
+
+
+
 
 ## Supported Models
 - [x] Qwen/Qwen2-VL-2B-Instruct 
@@ -69,6 +78,8 @@ sbatch scripts/grpo/train_fused.sh
 ```
 with Zero3, you can train 7B model on 24GB GPUs but the training speed is slow as the communication is the bottleneck (I have tried to use 120 RTX_4090 GPUs. It is crazy, but the communication latency is significant due to RTX_4090 does not have NCCL support.)
 
+- Misc: recommended learning rate is 6e-7.
+
 ## Inference
 - To test models trained with SFT, 
 ```
@@ -81,13 +92,13 @@ bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR true
 
 - To test models trained with GRPO,
 ```
-bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR false/true  true
+bash scripts/inference/run_sgg_inference.sh $DATASET $MODEL_NAME $OUTPUT_DIR false/true  true
 ```
 
 then, run the evaluation via
 ```
 python src/sgg_gather_preds.py $OUTPUT_DIR sgg_pred_results.json
-python src/vg150_eval.py sgg_pred_results.json
+python src/vg150_eval.py $DATASET sgg_pred_results.json
 ```
 
 
@@ -99,5 +110,12 @@ The GRPOTrainer used in this project is based on trl's [GRPOTrainer](https://git
 and we extend it to support multimodal inputs.
 
 ## Citation
-
+```
+@article{chen2025compile,
+  title={Compile Scene Graphs with Reinforcement Learning},
+  author={Chen, Zuyao and Wu, Jinlin and Lei, Zhen and Pollefeys, Marc and Chen, Chang Wen},
+  journal={arXiv preprint arXiv:2504.13617},
+  year={2025}
+}
+```
 

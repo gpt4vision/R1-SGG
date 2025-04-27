@@ -2,6 +2,7 @@ from tqdm import tqdm
 import numpy as np
 import copy
 
+import torch
 from pycocotools.coco import COCO
 
 from src.utils.sgg_eval import SggEvaluator
@@ -12,21 +13,49 @@ VG150_OBJ_CATEGORIES = ['__background__', 'airplane', 'animal', 'arm', 'bag', 'b
 VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"]
 
 
-NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
+def compute_iou(boxA, boxB):
+    # box format: [x1, y1, x2, y2]
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interWidth = max(0, xB - xA)
+    interHeight = max(0, yB - yA)
+    interArea = interWidth * interHeight
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    unionArea = boxAArea + boxBArea - interArea
+    return 0.0 if unionArea == 0 else interArea / unionArea
 
 
 class MyDataset(object):
-    def __init__(self, db):
+    def __init__(self, db, db_type='vg150'):
         self._coco = None
+        self.db_type = db_type 
+        assert self.db_type in ['vg150', 'psg']
         
-        self.ind_to_classes = VG150_OBJ_CATEGORIES
-        self.ind_to_predicates = VG150_PREDICATES
-        self.name2classes = {name: cls for cls, name in enumerate(self.ind_to_classes) if name != "__background__"}
-        self.categories = [{'supercategory': 'none', # not used?
-                            'id': idx, 
-                            'name': self.ind_to_classes[idx]}  
-                            for idx in range(len(self.ind_to_classes)) if self.ind_to_classes[idx] != '__background__'
-                            ]
+        if self.db_type == 'vg150':
+            self.ind_to_classes = VG150_OBJ_CATEGORIES
+            self.ind_to_predicates = VG150_PREDICATES
+            self.name2classes = {name: cls for cls, name in enumerate(self.ind_to_classes) if name != "__background__"}
+            self.categories = [{'supercategory': 'none', # not used?
+                                'id': idx, 
+                                'name': self.ind_to_classes[idx]}  
+                                for idx in range(len(self.ind_to_classes)) if self.ind_to_classes[idx] != '__background__'
+                                ]
+        elif self.db_type == 'psg':
+            psg_categories = json.load(open("src/psg_categories.json"))
+            PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+            PSG_PREDICATES = psg_categories['predicate_classes']
+            self.ind_to_classes = PSG_OBJ_CATEGORIES
+            self.ind_to_predicates = ['__background__'] + PSG_PREDICATES
+            self.name2classes = {name: cls for cls, name in enumerate(self.ind_to_classes) if name != "__background__"}
+            self.categories = [{'supercategory': 'none', # not used?
+                                'id': idx, 
+                                'name': self.ind_to_classes[idx]}  
+                                for idx in range(len(self.ind_to_classes)) if self.ind_to_classes[idx] != '__background__'
+                                ]
+            
 
         self.images = []
         self.annotations = []
@@ -100,6 +129,10 @@ class MyDataset(object):
 
         return self._coco
 
+def refine_node_edge(obj):
+    """ remove speical chars in the name. """
+    obj = obj.replace("_", " ").replace("-", " ")
+    return obj.strip().lower()
 
 if __name__ == "__main__":
     import os
@@ -107,12 +140,76 @@ if __name__ == "__main__":
     import json
     from datasets import load_dataset
     import torch
+    from collections import defaultdict
 
-    preds = json.load(open(sys.argv[1]))
-    db = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
-    dataset = MyDataset(db)
+    preds = json.load(open(sys.argv[2]))
+    db = load_dataset(sys.argv[1])['train']
+    db_type = 'vg150' if 'psg' not in sys.argv[1] else 'psg'
+    dataset = MyDataset(db, db_type)
 
-    sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), num_workers=4)
+
+    ngR = []
+    mR = defaultdict(list)
+    ngR_per_image = []
+    mR_per_image = defaultdict(list)
+    num_gt_rels = 0
+    for gt in tqdm(db):
+        im_id = gt['image_id']
+        if im_id in preds: # to prevent wrong generated image_id
+            pred = preds[im_id]
+        else:
+            pred = None
+        gt_rels = json.loads(gt['relationships'])
+        gt_objects = json.loads(gt['objects'])
+        gt_boxes = {refine_node_edge(obj['id']): obj['bbox'] for obj in gt_objects}
+        recall = []
+        recall_per_cat = defaultdict(list)
+
+        for gt_rel in gt_rels:
+             num_gt_rels += 1
+             match = False
+             gt_pred = refine_node_edge(gt_rel['predicate'])
+             gt_sub_name = refine_node_edge(gt_rel['subject'])
+             gt_obj_name = refine_node_edge(gt_rel['object'])
+
+             if pred is not None:
+                 for pred_rel in pred['relation_tuples']:
+                     if refine_node_edge(gt_pred) != refine_node_edge(pred_rel[-1]):
+                         continue
+
+                     if gt_sub_name.split('.')[0].strip() != refine_node_edge(pred_rel[0]).split('.')[0].strip() or \
+                        gt_obj_name.split('.')[0].strip() != refine_node_edge(pred_rel[2]).split('.')[0].strip():
+                         continue
+
+                     sub_iou = compute_iou(gt_boxes[gt_sub_name], pred_rel[1])
+                     obj_iou = compute_iou(gt_boxes[gt_obj_name],  pred_rel[3])
+                     if sub_iou >= 0.5 and obj_iou >= 0.5:
+                         match = True
+                         break
+
+             recall.append(match)
+             ngR.append(match)
+             mR[gt_pred].append(match)
+             recall_per_cat[gt_pred].append(match)
+
+        if len(recall) > 0: 
+             ngR_per_image.append(sum(recall) / len(recall) )
+
+        for k in recall_per_cat.keys():
+             mR_per_image[k].append(sum(recall_per_cat[k]) / len(recall_per_cat[k]) )
+        
+    mR_list = []
+    for k in mR.keys():
+        tmp = round(np.mean(mR[k]), 4)
+        mR_list.append((k, tmp))
+                 
+    ngR_per_image = np.mean(ngR_per_image)
+    mR_per_image = [(cat, round(np.mean(mR_per_image[cat]), 4) ) for cat in mR_per_image.keys()]
+
+
+    sgg_evaluator = SggEvaluator(dataset, iou_types=("bbox","relation"), 
+                                 num_workers=4, 
+                                 num_rel_category=len(dataset.ind_to_predicates))
 
     def to_torch(item):
         for k in item.keys():
@@ -139,3 +236,11 @@ if __name__ == "__main__":
     sgg_res = sgg_evaluator.accumulate()
     sgg_evaluator.summarize()
     sgg_evaluator.reset()
+
+
+    print("whole ng recall list:", mR_list)
+    print(f'whole ngR: {np.mean(ngR) * 100:.2f}')
+    print(f'whole mean of ngR: {sum([e[1] for e in mR_list]) / len(mR_list) * 100:.2f}')
+    print(f'ngR per image:{ngR_per_image * 100:.2f}')
+    print(f'mean ngR per image: {sum([e[1] for e in mR_per_image]) / len(mR_per_image) * 100:.2f}')
+    print(f'mean ngR list:{mR_per_image}')

@@ -43,6 +43,7 @@ from trl.data_utils import maybe_apply_chat_template
 # Set DEBUG_MODE flag and log path once
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 LOG_PATH = os.getenv("LOG_PATH", "debug.log")
+STRICT_FORMAT = os.getenv("STRICT_FORMAT", "true").lower() == "true"
 
 # Load spaCy model (with word vectors)
 try:
@@ -498,7 +499,7 @@ def format_reward(completions, image_id, **kwargs):
                 
                 if match and obj_valid:
                     reward = 1.0
-                elif obj_valid:
+                elif obj_valid and (not STRICT_FORMAT): # no need?
                     reward = 0.5 
                 else:
                     reward = 0.0
