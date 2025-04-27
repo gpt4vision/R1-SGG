@@ -106,11 +106,11 @@ sbatch scripts/grpo/train_fused.sh
 
 ### Inference with SFT-trained models:
 ```bash
-bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR
+bash scripts/inference/run_sgg_inference.sh $DATASET $MODEL_NAME $OUTPUT_DIR
 ```
 For models trained **with predefined categories**, add `true`:
 ```bash
-bash scripts/inference/run_sgg_inference.sh $MODEL_NAME $OUTPUT_DIR true
+bash scripts/inference/run_sgg_inference.sh $DATASET $MODEL_NAME $OUTPUT_DIR true
 ```
 
 ### Inference with GRPO-trained models:
