@@ -32,29 +32,6 @@ except OSError:
 DEBUG=False
 
 
-#from: https://github.com/OpenGVLab/all-seeing/blob/main/all-seeing-v2/llava/eval/eval_psg.py#L40
-def postprocess_text(text_list, synonyms):
-    if isinstance(text_list, str):
-        text_list = [text_list]
-
-    synonyms_text_list = []
-    for text in text_list:
-        # the sky --> ['the', 'sky']
-        text_nlp_list = nlp(text)
-        for text_nlp in text_nlp_list:
-            text = text_nlp.lemma_
-            synonyms_text_list.append(synonyms[text] if text in synonyms else text)
-    return synonyms_text_list if len(synonyms_text_list) > 0 else ['Unknown']
-
-def get_synonyms(synonyms_file):
-    synonyms = {}
-    with open(synonyms_file, 'r') as file:
-        lines = file.readlines()
-    for line in lines:
-        phrases = line.split(',')
-        for p in phrases:
-            synonyms[p.strip()] = phrases[0].strip()
-    return synonyms
 
 # Cache for spaCy docs to avoid repeated computations
 doc_cache = {}
