@@ -17,11 +17,8 @@ from utils.wordnet import find_synonym_map
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 
-VG150_OBJ_CATEGORIES = ['__background__', 'airplane', 'animal', 'arm', 'bag', 'banana', 'basket', 'beach', 'bear', 'bed', 'bench', 'bike', 'bird', 'board', 'boat', 'book', 'boot', 'bottle', 'bowl', 'box', 'boy', 'branch', 'building', 'bus', 'cabinet', 'cap', 'car', 'cat', 'chair', 'child', 'clock', 'coat', 'counter', 'cow', 'cup', 'curtain', 'desk', 'dog', 'door', 'drawer', 'ear', 'elephant', 'engine', 'eye', 'face', 'fence', 'finger', 'flag', 'flower', 'food', 'fork', 'fruit', 'giraffe', 'girl', 'glass', 'glove', 'guy', 'hair', 'hand', 'handle', 'hat', 'head', 'helmet', 'hill', 'horse', 'house', 'jacket', 'jean', 'kid', 'kite', 'lady', 'lamp', 'laptop', 'leaf', 'leg', 'letter', 'light', 'logo', 'man', 'men', 'motorcycle', 'mountain', 'mouth', 'neck', 'nose', 'number', 'orange', 'pant', 'paper', 'paw', 'people', 'person', 'phone', 'pillow', 'pizza', 'plane', 'plant', 'plate', 'player', 'pole', 'post', 'pot', 'racket', 'railing', 'rock', 'roof', 'room', 'screen', 'seat', 'sheep', 'shelf', 'shirt', 'shoe', 'short', 'sidewalk', 'sign', 'sink', 'skateboard', 'ski', 'skier', 'sneaker', 'snow', 'sock', 'stand', 'street', 'surfboard', 'table', 'tail', 'tie', 'tile', 'tire', 'toilet', 'towel', 'tower', 'track', 'train', 'tree', 'truck', 'trunk', 'umbrella', 'vase', 'vegetable', 'vehicle', 'wave', 'wheel', 'window', 'windshield', 'wing', 'wire', 'woman', 'zebra']
+from src.vg_synonyms import obj2vg_list, rel2vg_list, pass2act_list, VG150_OBJ_CATEGORIES, VG150_PREDICATES
 
-NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
-
-VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"]
 
 # Load spaCy model (with word vectors)
 try:
@@ -33,6 +30,8 @@ except OSError:
 
 
 DEBUG=False
+
+
 
 # Cache for spaCy docs to avoid repeated computations
 doc_cache = {}
@@ -127,7 +126,8 @@ def extract_answer_content(text: str) -> str:
 
 
 def refine_node_edge(obj):
-    return obj.replace("_", " ").replace("-", " ").lower()
+    obj = obj.replace("_", " ").replace("-", " ")
+    return obj.strip().lower()
 
 def scale_box(box, scale):
     sw, sh = scale
@@ -241,6 +241,18 @@ def visualize_assignments(image, pred_objs, gt_objs, assignments, filename,
 
 def main():
     json_folder = sys.argv[1] 
+    is_psg = 'psg' in json_folder
+    print("is_psg:", is_psg)
+    if is_psg:
+        psg_categories = json.load(open("src/psg_categories.json"))
+        PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+        PSG_OBJ_CATEGORIES = [refine_node_edge(e) for e in PSG_OBJ_CATEGORIES] # remove '-', '_' 
+        PSG_PREDICATES = psg_categories['predicate_classes']
+        NAME2CAT = {name: idx for idx, name in enumerate(PSG_OBJ_CATEGORIES)}
+        print("PSG_OBJ_CATEGORIES:\n", PSG_OBJ_CATEGORIES, "\n")    
+    else:
+        NAME2CAT = {name: idx for idx, name in enumerate(VG150_OBJ_CATEGORIES) if name != "__background__"}
+
 
     pred_files = glob.glob(os.path.join(json_folder, "*json"))
     preds = []
@@ -251,21 +263,29 @@ def main():
     is_qwen2vl = True # normalize bbox to [0, 1000]
     print("is_qwen2vl:", is_qwen2vl)
     if is_qwen2vl:
-        # Load the dataset and convert to a dict for faster lookup.
-        db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+        if not is_psg:
+            db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+        else:
+            db_raw = load_dataset("JosephZ/psg_test_sg")['train']
         db = {e['image_id']: e for e in tqdm(db_raw, desc="Loading dataset")}
 
-    pass2act = json.load(open("src/pass2act.json"))
-    pass2act = {e['source']: e for e in pass2act}
 
     fails = [0, 0]
     preds_dict = {}
     cats = []
-    # Load the pre-existing synonym mapping
-    with open('src/synonym_mapping.json', 'r') as f:
-        map_db = json.load(f)
-    map_db_rel = {}
+    if not is_psg:
+        map_obj2target = {e['source']: e['target'] for e in obj2vg_list}
+        map_rel2target = {e['source']: e['target'] for e in rel2vg_list}
+    else:
+        map_obj2target = {}
+        map_rel2target = {}
+
+    pass2act = {e['source']: e for e in pass2act_list}
     rel_cats = []
+    obj_cats = []
+
+    target_predicates = VG150_PREDICATES if not is_psg else ['__background__'] + PSG_PREDICATES
+    target_objects = VG150_OBJ_CATEGORIES[1:] if not is_psg else PSG_PREDICATES
 
     all_im_ids = []
     for kk, item in enumerate(tqdm(preds, desc="Processing images")):
@@ -278,8 +298,6 @@ def main():
         if is_qwen2vl: # for Qwen2VL, the output is normalized to [0, 1000]
             iw, ih = image.size
             scale_factors = (iw / 1000.0, ih / 1000.0)
-            # Uncomment the following line to log image details if necessary
-            # print("image id:", im_id, " image size:", image.size)
     
         gt_objs = json.loads(item['gt_objects'])
         gt_rels = json.loads(item['gt_relationships'])
@@ -293,90 +311,109 @@ def main():
 
             pred_objs = resp['objects']
             pred_rels = resp['relationships']
+            pred_objs_ = []
             for obj in pred_objs:
                 assert len(obj['bbox']) == 4, "len(obj['bbox']) != 4"
                 assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
                 assert 'id' in obj, "invalid obj:{}".format(obj)
+                assert isinstance(obj['id'], str), f"invalid obj:{obj}"
+                if is_qwen2vl:
+                    obj['bbox'] = scale_box(obj['bbox'], scale_factors)
 
-            new_pred_rels = []
+                pred_objs_.append({'id': refine_node_edge(obj['id']), 'bbox': obj['bbox']})
+            pred_objs = pred_objs_
+
+            pred_rels_ = []
             for rel in pred_rels:
-                if isinstance(rel, str) and '->' in rel:
-                    tmp = rel.split('->')
-                    try:
-                        assert len(tmp) == 3, "CHECK relationship triplet:{}".format(tmp)
-                        new_pred_rels.append({"subject": tmp[0].strip(), "predicate": tmp[1].strip(), "object": tmp[2].strip()})
-                    except:
-                        continue
+                tmp = {'subject': refine_node_edge(rel['subject']),
+                       'predicate': refine_node_edge(rel['predicate']),
+                       'object': refine_node_edge(rel['object']),
+                      }
+                pred_rels_.append(tmp)
+            pred_rels = pred_rels_
 
-            if isinstance(pred_rels[0], str):
-                pred_rels = new_pred_rels
-
-        except Exception as e:
-            print(f"Fail to extract objs. & rels. of im_id:{im_id} from response:", item['response'])
+        except Exception as e: 
+            print(f"Fail to extract objs. & rels. of im_id:{im_id} from response:", item['response'], " Exception:", e)
             fails[0] += 1
             continue
 
-        pred_objs_dict = {"image_id": im_id, "boxes": [], "labels": [], "scores": [], "names": []}
+        pred_objs_dict = {"image_id": im_id, "boxes": [], "labels": [], "scores": [], "names": [], "names_target":[]}
         for e in pred_objs:
-            if is_qwen2vl:
-                e['bbox'] = scale_box(e['bbox'], scale_factors)
-
             org_name = e['id']
-            cat = org_name.split('.')[0].replace('-', ' ').replace('_', ' ').lower()
+            cat = org_name.split('.')[0]
             cats.append(cat)
-            if cat not in map_db:
-                # Cache new synonym mapping if missing
-                db_ = find_synonym_map([cat], VG150_OBJ_CATEGORIES[1:])
-                if len(db_) > 0:
-                    print("Add a mapping:", db_)
-                map_db.update(db_)
-            if cat in map_db:
-                pred_objs_dict['labels'].append(NAME2CAT[map_db[cat]])
+            if cat not in target_objects:
+                if cat not in map_obj2target:
+                    db_ = find_synonym_map([cat], target_objects)
+                    map_obj2target.update(db_)
+                if cat in map_obj2target:
+                    cat = map_obj2target[cat] 
+
+            if cat in NAME2CAT:
+                pred_objs_dict['labels'].append(NAME2CAT[cat])
                 pred_objs_dict['boxes'].append(e['bbox'])
                 pred_objs_dict['scores'].append(1.0)
                 pred_objs_dict['names'].append(org_name)
+                pred_objs_dict['names_target'].append(cat)
 
         if len(pred_objs_dict['boxes']) > 0:
             preds_dict[im_id] = pred_objs_dict
         else:
             continue
 
-        # Process relationships using a set for faster membership check.
+        # process relationships
         names = pred_objs_dict['names']
         names_set = set(names)
         all_node_pairs = []
         all_relation = []
+        relation_tuples = []
         for rel in pred_rels:
             try:
                 sub = rel['subject']
                 obj = rel['object']
-                predicate = rel['predicate'].replace('_', ' ').replace('-', ' ').strip().lower()
+                predicate = rel['predicate']
+                assert isinstance(sub, str) and isinstance(obj, str)
+                rel_cats.append(predicate)
+                obj_cats.append(sub.split('.')[0])
+                obj_cats.append(obj.split('.')[0])
             except:
                 continue
 
-            if predicate in pass2act:
+            if predicate not in target_predicates and predicate in pass2act:
                 direction = pass2act[predicate]['passive']
                 predicate = pass2act[predicate]['target']
                 if direction == 1: # swap <subject, object>
                     sub_ = sub
                     sub = obj
                     obj = sub_ 
+                
 
             if sub in names_set and obj in names_set:
                 sid = names.index(sub)
                 oid = names.index(obj)
-                if predicate not in map_db_rel:
-                    map_db_rel.update(find_synonym_map([predicate], VG150_PREDICATES[1:]))
-                rel_cats.append(predicate)
-                if predicate in map_db_rel:
-                    new_predicate = map_db_rel[predicate]
-                    triplet = [sid, oid, VG150_PREDICATES.index(new_predicate)]
+
+                if (predicate not in target_predicates) and (predicate not in map_rel2target):
+                    rel_syn = find_synonym_map([predicate], target_predicates[1:])
+                    map_rel2target.update(rel_syn)
+
+                if (predicate not in target_predicates) and (predicate in map_rel2target):
+                    predicate = map_rel2target[predicate]
+                   
+                if predicate in target_predicates:
+                    relation_tuples.append([sub.split('.')[0], pred_objs_dict['boxes'][sid], 
+                                            obj.split('.')[0], pred_objs_dict['boxes'][oid],
+                                            predicate])
+
+                    triplet = [sid, oid, 
+                               target_predicates.index(predicate) 
+                              ]
                     all_node_pairs.append([sid, oid])
 
-                    tmp = [0]*len(VG150_OBJ_CATEGORIES)
+                    tmp = [0]*len(target_predicates)
                     tmp[triplet[-1]] = 1
                     all_relation.append(tmp)
 
+        preds_dict[im_id]['relation_tuples'] = relation_tuples
         preds_dict[im_id]['graph'] = {'all_node_pairs': all_node_pairs, 
                                       'all_relation': all_relation,
                                       'pred_boxes': pred_objs_dict['boxes'],
@@ -395,14 +432,15 @@ def main():
 
     cats = list(set(cats))
     print("fails:", fails)
-    print("failure rate:", fails[0]/fails[1]*100.0)
+    print("failure rate:", round(fails[0]/fails[1]*100.0, 4))
     print("Number of valid predictions:", len(preds_dict))
     for im_id in all_im_ids:
-        pred_objs_dict = {"image_id": im_id, "boxes": torch.randn(1, 4).tolist(), "labels": [0], "scores": [0], "names": ["unknown"]}
+        pred_objs_dict = {"image_id": im_id, "boxes": torch.empty(1, 4).tolist(), "labels": [0], "scores": [0], "names": ["unknown"], "names_target":["unknown"]}
         if im_id not in preds_dict:
             preds_dict[im_id] = pred_objs_dict
+            preds_dict[im_id]['relation_tuples'] = []
             preds_dict[im_id]['graph'] = {'all_node_pairs': torch.zeros(1, 2).long().tolist(),
-                                          'all_relation': torch.zeros(1, 51).tolist(),
+                                          'all_relation': torch.zeros(1, len(target_predicates)).tolist(),
                                           'pred_boxes': pred_objs_dict['boxes'],
                                           'pred_boxes_class': pred_objs_dict['labels'],
                                           'pred_boxes_score': pred_objs_dict['scores']}
@@ -410,6 +448,11 @@ def main():
 
     rel_cats = list(set(rel_cats))
     print("rel_cats:", len(rel_cats), rel_cats)
+    print("rel_cats (novel):", [e for e in rel_cats if e not in map_rel2target and e not in set(target_predicates)])
+    obj_cats = list(set(obj_cats))
+    print("obj_cats:", len(obj_cats), obj_cats)
+    print("obj_cats (novel):", [e for e in obj_cats if e not in map_obj2target and e not in NAME2CAT])
+    
     with open(sys.argv[2], 'w') as fout:
         json.dump(preds_dict, fout)
 
