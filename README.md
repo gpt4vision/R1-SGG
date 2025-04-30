@@ -1,7 +1,7 @@
 # R1-SGG: Compile Scene Graphs with Reinforcement Learning
 
-**Structured Visual Reasoning with Multimodal LLMs and Reinforcement Learning**  
-[![Paper](https://img.shields.io/badge/arXiv-2504.13617-b31b1b.svg)](https://arxiv.org/abs/2504.13617) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+## **Structured Visual Reasoning with Multimodal LLMs and Reinforcement Learning**  
+[![Paper](https://img.shields.io/badge/arXiv-2504.13617-b31b1b.svg)](https://arxiv.org/abs/2504.13617)  [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) [![Hugging Face](https://img.shields.io/badge/HuggingFace-Demo-orange?logo=huggingface)](https://huggingface.co/spaces/JosephZ/R1-SGG)
 
 ---
 
