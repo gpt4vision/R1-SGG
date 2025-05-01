@@ -44,15 +44,23 @@ PROMPT_SG_25 ='Generate a structured scene graph for an image using the followin
 def get_model(name, device_map="auto", max_model_len=4096):
     is_qwen2vl = 'qwen2vl' in name.lower() or 'qwen2-vl' in name.lower()
     is_qwen25vl = 'qwen2.5-vl' in name.lower() or 'qwen25-vl' in name.lower()
+    base_model_name = None
     if is_qwen2vl or is_qwen25vl:
         print("Using model:", name)
         min_pixels = 4*28*28
         max_pixels = 1024*28*28
         if is_qwen2vl:
-            base_model_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2-VL-2B-Instruct"
-        else:
-            base_model_name = "Qwen/Qwen2.5-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2.5-VL-3B-Instruct"
+            if '7b' in name.lower():
+                base_model_name = "Qwen/Qwen2-VL-7B-Instruct" 
+            elif '2b' in name.lower():
+                base_model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        if is_qwen25vl:
+            if '7b' in name.lower():
+                base_model_name = "Qwen/Qwen2.5-VL-7B-Instruct" 
+            elif '3b' in name.lower():
+                base_model_name = "Qwen/Qwen2.5-VL-3B-Instruct" 
 
+        assert base_model_name not None, "TODO : check the model:{}".format(name)
         processor = AutoProcessor.from_pretrained(base_model_name, 
                                         min_pixels=min_pixels, max_pixels=max_pixels)
 
@@ -109,7 +117,7 @@ def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False
             ],
         },
     ]
-    return messages
+    return image, messages
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run model inference on a dataset.")
@@ -164,14 +172,23 @@ def main():
             gt_rels = [e['relationships'] for e in examples]
     
             llm_inputs = []
+            images = []
             for example in examples:
-                prompt = format_data(example, 
+                image, prompt = format_data(example, 
                                      use_predefined_cats=self.use_predefined_cats, 
                                      use_think_system_prompt=self.use_think_system_prompt)
 
                 llm_inputs.append(prompt)
+                images.append(image)
 
-            return ids, gt_objs, gt_rels, llm_inputs
+            inputs = processor(
+                images=images,
+                return_tensors="pt",
+            )
+            input_height = [inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
+            input_width = [inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]      
+
+            return ids, gt_objs, gt_rels, input_width, input_height, llm_inputs
 
 
 
@@ -219,29 +236,12 @@ def main():
 
     # Iterate over the data loader.
     _iter = 0
-    for (im_ids, gt_objs, gt_rels, batch) in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
-        text = processor.apply_chat_template(
-                   batch, tokenize=False, add_generation_prompt=True
-               )
-        image_inputs, video_inputs = process_vision_info(batch)
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-        input_height = inputs['image_grid_thw'][0][1]*14
-        input_width = inputs['image_grid_thw'][0][2]*14        
-
+    for im_ids, gt_objs, gt_rels, input_width, input_height, batch in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
         with torch.no_grad():
             # Now pass correctly formatted inputs to vLLM
             outputs = model.chat(batch, sampling_params=sampling_params)
             output_texts = [output.outputs[0].text for output in outputs]
 
-        if is_qwen2vl:
-            box_scale = [1000.0, 1000.0]
-        elif is_qwen25vl:
-            box_scale = [input_width, input_height]
  
         if local_rank == 0 and _iter % 100 == 0:
             print("*" * 100)
@@ -254,7 +254,14 @@ def main():
                     "*"*100)
 
         _iter += 1
-        for im_id, gt_obj, gt_rel, output_text in zip(im_ids, gt_objs, gt_rels, output_texts):
+        for im_id, gt_obj, gt_rel, output_text, input_iw, input_ih in zip(im_ids, gt_objs, gt_rels, output_texts, input_width, input_height):
+            if is_qwen2vl:
+                box_scale = [1000.0, 1000.0]
+            elif is_qwen25vl:
+                box_scale = [input_iw, input_ih]
+            else:
+                raise Exception("TODO")
+
             out = {"image_id": im_id, "response": output_text, 
                    "gt_objects": gt_obj, "gt_relationships": gt_rel,
                    "box_scale": box_scale

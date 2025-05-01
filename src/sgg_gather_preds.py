@@ -29,7 +29,7 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 
-DEBUG=False
+DEBUG=os.getenv("DEBUG", "false").lower() == "true"
 
 
 

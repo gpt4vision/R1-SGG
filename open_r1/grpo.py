@@ -262,9 +262,6 @@ def box_L1(boxA, boxB):
     return l1_distance    
 
 
-def normalize_box(box, scale=1000.):
-    """ for qwen2vl, its output should be [0, 1000]"""
-    return [e / scale for e in box]
 
 
 def cost_function(pred, gt, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
@@ -494,15 +491,20 @@ def self_evaluation(completions, image_id, image, task_type_list, **kwargs):
     return prompts
 
         
+def scale_box(box, scale):
+    sw, sh = scale
+    assert len(box) == 4, " len(box) != 4 "
+    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
 
 
-def node_acc_reward(completions, solution, image_id, task_type_list, **kwargs):
+
+def node_acc_reward(completions, solution, image_id, task_type_list, box_scale, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for content, sol, im_id, task_type in zip(contents, solution, image_id, task_type_list):
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
         reward = 0.0
         match_objects = []
         if task_type not in ['sgg', 'det']:
@@ -514,7 +516,7 @@ def node_acc_reward(completions, solution, image_id, task_type_list, **kwargs):
             pred_objs = preds['objects']
             _objs = []
             for obj in pred_objs:
-                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
                 obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
@@ -546,13 +548,13 @@ def node_acc_reward(completions, solution, image_id, task_type_list, **kwargs):
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def node_box_reward(completions, solution, image_id, task_type_list, **kwargs):
+def node_box_reward(completions, solution, image_id, task_type_list, box_scale, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for content, sol, im_id, task_type in zip(contents, solution, image_id, task_type_list):
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
         reward = 0.0
         match_objects = []
         if task_type not in ['sgg', 'det']:
@@ -564,7 +566,7 @@ def node_box_reward(completions, solution, image_id, task_type_list, **kwargs):
             pred_objs = preds['objects']
             _objs = []
             for obj in pred_objs:
-                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
                 obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
@@ -597,13 +599,13 @@ def node_box_reward(completions, solution, image_id, task_type_list, **kwargs):
     return rewards
 
 
-def edge_reward(completions, solution, image_id,  task_type_list, **kwargs):
+def edge_reward(completions, solution, image_id,  task_type_list, box_scale, **kwargs):
     """Compute edge-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for content, sol, im_id, task_type in zip(contents, solution, image_id, task_type_list):
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
         reward = 0.0
         match_objects = []
         match_triplets = []
@@ -619,7 +621,7 @@ def edge_reward(completions, solution, image_id,  task_type_list, **kwargs):
                 pred_rels = preds['relationships']
                 _objs = []
                 for obj in pred_objs:
-                    obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                    obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
                     obj['id'] = refine_node_edge(obj['id'])
                     _objs.append(obj)
                 pred_objs = _objs
@@ -694,7 +696,7 @@ def is_valid_box(item):
     if not isinstance(item, dict):
         return False
 
-    bbox = item.get("bbox")
+    bbox = item.get("bbox") 
     if "id" not in item or not isinstance(bbox, list) or len(bbox) != 4:
         return False
 
@@ -806,30 +808,6 @@ SYSTEM_PROMPT = (
 
 
 
-def resize_image(img, fix_length=512, resize=True, shortest_side=False):
-    if not resize:
-        return 1.0, img
-
-    width, height = img.size
-    if shortest_side:
-        ratio = fix_length / min(width, height)
-    else:
-        ratio = fix_length / max(width, height)
-
-    new_width = int(width * ratio)
-    new_height = int(height * ratio)
-    scale = (new_width / width, new_height / height)
-    return scale, img.resize((new_width, new_height))
-
-
-def scale_box(box, scale):
-    sw, sh = scale
-    assert len(box) == 4, " len(box) != 4 "
-    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
-
-
-
-
 def main(script_args, training_args, model_args):
     if script_args.reward_funcs is None:
         script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
@@ -853,20 +831,45 @@ def main(script_args, training_args, model_args):
         return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats, task_type=["sgg"], use_think_prompt_inplace=False, disable_think_tags=False):
+        def __init__(self, processor, model_type,
+                     use_predefined_cats, task_type=["sgg"], 
+                     use_think_prompt_inplace=False, disable_think_tags=False,
+                     ):
             self.processor = processor
+            self.model_type = model_type
             self.use_predefined_cats = use_predefined_cats
             self.task_type = task_type
             self.use_think_prompt_inplace = use_think_prompt_inplace
             self.disable_think_tags = disable_think_tags
 
+        def __repr__(self):
+            return (
+                f"{self.__class__.__name__}(\n"
+                f"  model_type={self.model_type},\n"
+                f"  processor={self.processor.__class__.__name__},\n"
+                f"  use_predefined_cats={self.use_predefined_cats},\n"
+                f"  task_type={self.task_type},\n"
+                f"  use_think_prompt_inplace={self.use_think_prompt_inplace},\n"
+                f"  disable_think_tags={self.disable_think_tags},\n"
+                f")"
+            )            
+
         def __call__(self, examples):
             batch = []
-            for example in examples:
-                image = example["image"].convert('RGB') 
+            images = [example["image"].convert('RGB') for example in examples]
+            if self.model_type == 'qwen2vl':
+                input_width, input_height = [1000.0]*len(images), [1000.0]*len(images)
+            elif self.model_type == 'qwen2.5vl':
+                image_inputs = self.processor(images=images, return_tensors="pt") 
+                input_height = [image_inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
+                input_width = [image_inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]
+            else:
+                raise Exception("TODO")
+
+            for image, example, input_iw, input_ih in zip(images, examples, input_width, input_height):
                 org_iw, org_ih = image.size
-                box_scale, image = resize_image(image, 512, resize=True)
-                new_iw, new_ih = image.size
+                box_scale = [input_iw, input_ih]
+
                 # load GTs.
                 gt_objs = example["objects"]
                 gt_rels = example["relationships"]
@@ -877,15 +880,11 @@ def main(script_args, training_args, model_args):
 
                 new_objs = []
                 gt_objs_int = []
+                # normalize box to [0,1]
                 for obj in gt_objs:
-                    bbox = scale_box(obj['bbox'], box_scale)
-                    # normalize box
-                    obj['bbox'] = [bbox[0] / new_iw, bbox[1] / new_ih, bbox[2] / new_iw, bbox[3] / new_ih]
-                    tmp = [int(bbox[0] / new_iw * 1000), int(bbox[1] / new_ih * 1000),
-                           int(bbox[2] / new_iw * 1000), int(bbox[3] / new_ih * 1000)]
-
-                    gt_objs_int.append({"id": obj['id'], "bbox": tmp})
-
+                    bbox = scale_box(obj['bbox'], (1.0/org_iw, 1.0/org_ih))
+                    gt_objs_int.append({"id": obj['id'], "bbox": scale_box(bbox, box_scale) })
+                    obj['bbox'] = bbox
                     new_objs.append(obj)
                 gt_objs = new_objs
 
@@ -894,7 +893,7 @@ def main(script_args, training_args, model_args):
                     if self.use_predefined_cats:
                         org_prompt = example['prompt_close'] #w. predefined categories
                     else:
-                        org_prompt = example['prompt_open'] if 'prompt_open' in example else PROMPT_SG_OPEN
+                        org_prompt = PROMPT_SG_OPEN
 
                     org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
                     org_prompt = replace_answer_format(org_prompt)
@@ -934,7 +933,8 @@ def main(script_args, training_args, model_args):
                               "image": image, 
                               "solution": solution,
                               "image_id": example['image_id'],
-                              "task_type_list": task_type
+                              "task_type_list": task_type,
+                              "box_scale": box_scale,
                               })
 
             return batch
@@ -946,13 +946,31 @@ def main(script_args, training_args, model_args):
         rank = 0
         world_size = 1
 
-    if model_args.model_name_or_path not in ["Qwen/Qwen2-VL-7B-Instruct", "Qwen/Qwen2-VL-2B-Instruct"]:
+    model_type=None
+    base_name = None
+    if 'qwen2vl' in model_args.model_name_or_path.lower() or 'qwen2-vl' in model_args.model_name_or_path or \
+       'qwen-2-vl' in model_args.model_name_or_path:
+        model_type = "qwen2vl"
+        base_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in model_args.model_name_or_path.lower() else "Qwen/Qwen2-VL-2B-Instruct"
         if '7b' in model_args.model_name_or_path.lower():
             base_name = "Qwen/Qwen2-VL-7B-Instruct"
-        else:
+        elif '2b' in model_args.model_name_or_path.lower():
             base_name = "Qwen/Qwen2-VL-2B-Instruct"
+        else:
+            raise Exception("Unknown model:{}".format(model_args.model_name_or_path.lower()))
+    elif 'qwen2.5vl' in model_args.model_name_or_path.lower() or 'qwen2.5-vl' in model_args.model_name_or_path.lower() or \
+         'qwen2-5-vl' in model_args.model_name_or_path.lower() or 'qwen-2.5-vl' in model_args.model_name_or_path.lower():
+        model_type = 'qwen2.5vl'
+        if '7b' in model_args.model_name_or_path.lower():
+            base_name = "Qwen/Qwen2.5-VL-7B-Instruct"
+        elif '3b' in model_args.model_name_or_path.lower():
+            base_name = "Qwen/Qwen2.5-VL-3B-Instruct"
+        else: 
+            raise Exception("Unknown model:{}".format(model_args.model_name_or_path.lower()))
     else:
-        base_name = model_args.model_name_or_path
+        raise Exception("Unknown model type:{}".format(model_args.model_name_or_path))
+
+
 
     processor = Qwen2VLProcessor.from_pretrained(base_name, 
                     min_pixels=script_args.min_pixels,
@@ -962,7 +980,7 @@ def main(script_args, training_args, model_args):
     processor.pad_token_id = pad_token_id
     processor.eos_token_id = processor.tokenizer.eos_token_id
 
-    collator_instance = Collator(processor, 
+    collator_instance = Collator(processor,  model_type=model_type,
                                  use_predefined_cats=script_args.use_predefined_cats, 
                                  task_type=script_args.task_type, 
                                  use_think_prompt_inplace=script_args.use_think_prompt_inplace,
@@ -1006,7 +1024,7 @@ def main(script_args, training_args, model_args):
         min_pixels=script_args.min_pixels,
         data_collator=collator_instance,
         processing_class=processor,
-        model_type="qwen2vl", #hack
+        model_type=model_type,
         use_fp8=script_args.use_fp8
     )
     # Check for existing checkpoint
