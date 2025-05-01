@@ -31,7 +31,7 @@ import torch
 import numpy as np
 import random
 from datasets import load_dataset, load_from_disk
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
+from transformers import AutoProcessor
 
 from trainer import GRPOTrainerV2, GRPOConfig
 
@@ -972,7 +972,7 @@ def main(script_args, training_args, model_args):
 
 
 
-    processor = Qwen2VLProcessor.from_pretrained(base_name, 
+    processor = AutoProcessor.from_pretrained(base_name, 
                     min_pixels=script_args.min_pixels,
                     max_pixels=script_args.max_pixels)
 

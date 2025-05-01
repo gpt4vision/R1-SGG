@@ -60,7 +60,7 @@ def get_model(name, device_map="auto", max_model_len=4096):
             elif '3b' in name.lower():
                 base_model_name = "Qwen/Qwen2.5-VL-3B-Instruct" 
 
-        assert base_model_name not None, "TODO : check the model:{}".format(name)
+        assert base_model_name is not None, "TODO: check the model -- {}".format(name)
         processor = AutoProcessor.from_pretrained(base_model_name, 
                                         min_pixels=min_pixels, max_pixels=max_pixels)
 
