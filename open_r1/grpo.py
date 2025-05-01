@@ -832,13 +832,13 @@ def main(script_args, training_args, model_args):
 
     class Collator(object):
         def __init__(self, processor, model_type,
-                     use_predefined_cats, task_type=["sgg"], 
-                     use_think_prompt_inplace=False, disable_think_tags=False,
+                     use_predefined_cats,
+                     use_think_prompt_inplace=False, 
+                     disable_think_tags=False,
                      ):
             self.processor = processor
             self.model_type = model_type
             self.use_predefined_cats = use_predefined_cats
-            self.task_type = task_type
             self.use_think_prompt_inplace = use_think_prompt_inplace
             self.disable_think_tags = disable_think_tags
 
@@ -848,7 +848,6 @@ def main(script_args, training_args, model_args):
                 f"  model_type={self.model_type},\n"
                 f"  processor={self.processor.__class__.__name__},\n"
                 f"  use_predefined_cats={self.use_predefined_cats},\n"
-                f"  task_type={self.task_type},\n"
                 f"  use_think_prompt_inplace={self.use_think_prompt_inplace},\n"
                 f"  disable_think_tags={self.disable_think_tags},\n"
                 f")"
@@ -856,54 +855,21 @@ def main(script_args, training_args, model_args):
 
         def __call__(self, examples):
             batch = []
-            images = [example["image"].convert('RGB') for example in examples]
-            if self.model_type == 'qwen2vl':
-                input_width, input_height = [1000.0]*len(images), [1000.0]*len(images)
-            elif self.model_type == 'qwen2.5vl':
-                image_inputs = self.processor(images=images, return_tensors="pt") 
-                input_height = [image_inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
-                input_width = [image_inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]
-            else:
-                raise Exception("TODO")
-
-            for image, example, input_iw, input_ih in zip(images, examples, input_width, input_height):
+            images, prompts = [], []
+            for example in examples:
+                image = example["image"].convert('RGB')
                 org_iw, org_ih = image.size
-                box_scale = [input_iw, input_ih]
+                images.append(image)
+                if self.use_predefined_cats:
+                    org_prompt = example['prompt_close'] #w. predefined categories
+                else:
+                    org_prompt = PROMPT_SG_OPEN
 
-                # load GTs.
-                gt_objs = example["objects"]
-                gt_rels = example["relationships"]
-                if not isinstance(gt_objs, (list, tuple)):
-                    gt_objs = json.loads(gt_objs)
-                if not isinstance(gt_rels, (list, tuple)):
-                    gt_rels = json.loads(gt_rels)
-
-                new_objs = []
-                gt_objs_int = []
-                # normalize box to [0,1]
-                for obj in gt_objs:
-                    bbox = scale_box(obj['bbox'], (1.0/org_iw, 1.0/org_ih))
-                    gt_objs_int.append({"id": obj['id'], "bbox": scale_box(bbox, box_scale) })
-                    obj['bbox'] = bbox
-                    new_objs.append(obj)
-                gt_objs = new_objs
-
-                task_type = example['task_type'].lower()
-                if task_type == 'sgg':
-                    if self.use_predefined_cats:
-                        org_prompt = example['prompt_close'] #w. predefined categories
-                    else:
-                        org_prompt = PROMPT_SG_OPEN
-
-                    org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
-                    org_prompt = replace_answer_format(org_prompt)
-                    #     
-                    if self.use_think_prompt_inplace:
-                        org_prompt = PROMPT_SG
-                elif task_type == 'det':
-                    org_prompt = PROMPT_DET
-                elif task_type == 'cls':
-                    org_prompt = PROMPT_CLS.replace(OBJ_HOLDER, "[" + ",".join([json.dumps(e) for e in gt_objs_int]) + "]")
+                org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
+                org_prompt = replace_answer_format(org_prompt)
+                #     
+                if self.use_think_prompt_inplace:
+                    org_prompt = PROMPT_SG
 
                 system_prompt = "You are a helpful and multimodal AI assistant." if self.use_think_prompt_inplace or self.disable_think_tags else SYSTEM_PROMPT
                 prompt = [
@@ -918,22 +884,48 @@ def main(script_args, training_args, model_args):
                         ]
                     }
                 ]
+                prompts.append(prompt)
 
-                if task_type == 'sgg':
-                    scene_graph = {"objects": gt_objs, "relationships": gt_rels}
-                    solution = scene_graph
-                elif task_type == 'det':
-                    solution = {"objects": gt_objs}
-                elif task_type == 'cls':
-                    solution = {"relationships": gt_rels}
-                else:
-                    raise Exception(f"Unknown task_type:{task_type}")
+            if self.model_type == 'qwen2vl':
+                input_width, input_height = [1000.0]*len(images), [1000.0]*len(images)
+            elif self.model_type == 'qwen2.5vl':
+                texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                         for msg in prompts
+                ]
+                image_inputs = self.processor(text=texts, images=images, padding=True, return_tensors="pt") 
+                input_height = [image_inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
+                input_width = [image_inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]
+            else:
+                raise Exception("TODO")
+            
+            for image, example, prompt, input_iw, input_ih in zip(images, examples, prompts, input_width, input_height):
+                org_iw, org_ih = image.size
+                box_scale = [input_iw, input_ih]
+
+                # load GTs.
+                gt_objs = example["objects"]
+                gt_rels = example["relationships"]
+                if not isinstance(gt_objs, (list, tuple)):
+                    gt_objs = json.loads(gt_objs)
+                if not isinstance(gt_rels, (list, tuple)):
+                    gt_rels = json.loads(gt_rels)
+
+                new_objs = []
+                # normalize box to [0,1]
+                for obj in gt_objs:
+                    obj['bbox'] = scale_box(obj['bbox'], (1.0/org_iw, 1.0/org_ih))
+                    new_objs.append(obj)
+                gt_objs = new_objs
+
+
+                scene_graph = {"objects": gt_objs, "relationships": gt_rels}
+                solution = scene_graph
 
                 batch.append({"prompt": prompt, 
                               "image": image, 
                               "solution": solution,
                               "image_id": example['image_id'],
-                              "task_type_list": task_type,
+                              "task_type_list": "sgg",
                               "box_scale": box_scale,
                               })
 
@@ -982,7 +974,6 @@ def main(script_args, training_args, model_args):
 
     collator_instance = Collator(processor,  model_type=model_type,
                                  use_predefined_cats=script_args.use_predefined_cats, 
-                                 task_type=script_args.task_type, 
                                  use_think_prompt_inplace=script_args.use_think_prompt_inplace,
                                  disable_think_tags=script_args.disable_think_tags,
                                 )
