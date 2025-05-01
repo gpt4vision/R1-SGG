@@ -35,17 +35,24 @@ SYSTEM_PROMPT = (
 
 PROMPT_SG='Generate a structured scene graph for an image using the following format:\n\n```json\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n```\n\n### **Guidelines:**\n- **Objects:**\n  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).\n  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n```json\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n```\n\nNow, generate the complete scene graph for the provided image:\n'
 
+PROMPT_SG_25 ='Generate a structured scene graph for an image using the following format:\n\n```json\n{\n  "objects": [\n    {"label": "object_name.number", "bbox_2d": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n```\n\n### **Guidelines:**\n- **Objects:**\n  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).\n  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n```json\n{\n  "objects": [\n    {"label": "person.1", "bbox_2d": [120, 200, 350, 700]},\n    {"label": "bike.2", "bbox_2d": [100, 600, 400, 800]},\n    {"label": "helmet.3", "bbox_2d": [150, 150, 280, 240]},\n    {"label": "tree.4", "bbox_2d": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n```\n\nNow, generate the complete scene graph for the provided image:\n'
+
+
 
 
 
 def get_model(name, device_map="auto", max_model_len=4096):
     is_qwen2vl = 'qwen2vl' in name.lower() or 'qwen2-vl' in name.lower()
-
-    if is_qwen2vl:
+    is_qwen25vl = 'qwen2.5-vl' in name.lower() or 'qwen25-vl' in name.lower()
+    if is_qwen2vl or is_qwen25vl:
         print("Using model:", name)
         min_pixels = 4*28*28
         max_pixels = 1024*28*28
-        base_model_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2-VL-2B-Instruct"
+        if is_qwen2vl:
+            base_model_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2-VL-2B-Instruct"
+        else:
+            base_model_name = "Qwen/Qwen2.5-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2.5-VL-3B-Instruct"
+
         processor = AutoProcessor.from_pretrained(base_model_name, 
                                         min_pixels=min_pixels, max_pixels=max_pixels)
 
@@ -79,7 +86,7 @@ def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False
     if use_predefined_cats:
         prompt = sample['prompt_close']
     else:
-        prompt = sample['prompt_open'] if 'prompt_open' in sample else PROMPT_SG
+        prompt = PROMPT_SG
 
     if remove_image_size_in_prompt:
         prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
@@ -130,6 +137,8 @@ def main():
     rank = torch.distributed.get_rank()  # GPU ID or node rank
     world_size = torch.distributed.get_world_size()  # Total number of GPUs/nodes
 
+    is_qwen2vl = 'qwen2vl' in args.model.lower() or 'qwen2-vl' in args.model.lower()
+    is_qwen25vl = 'qwen2.5-vl' in args.model.lower() or 'qwen25-vl' in args.model.lower()
 
     # Load the model and processor.
     model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
@@ -211,12 +220,29 @@ def main():
     # Iterate over the data loader.
     _iter = 0
     for (im_ids, gt_objs, gt_rels, batch) in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
+        text = processor.apply_chat_template(
+                   batch, tokenize=False, add_generation_prompt=True
+               )
+        image_inputs, video_inputs = process_vision_info(batch)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        input_height = inputs['image_grid_thw'][0][1]*14
+        input_width = inputs['image_grid_thw'][0][2]*14        
+
         with torch.no_grad():
             # Now pass correctly formatted inputs to vLLM
             outputs = model.chat(batch, sampling_params=sampling_params)
             output_texts = [output.outputs[0].text for output in outputs]
 
-
+        if is_qwen2vl:
+            box_scale = [1000.0, 1000.0]
+        elif is_qwen25vl:
+            box_scale = [input_width, input_height]
+ 
         if local_rank == 0 and _iter % 100 == 0:
             print("*" * 100)
             print("nvidia-smi:")
@@ -230,7 +256,8 @@ def main():
         _iter += 1
         for im_id, gt_obj, gt_rel, output_text in zip(im_ids, gt_objs, gt_rels, output_texts):
             out = {"image_id": im_id, "response": output_text, 
-                   "gt_objects": gt_obj, "gt_relationships": gt_rel 
+                   "gt_objects": gt_obj, "gt_relationships": gt_rel,
+                   "box_scale": box_scale
                   }
             dst_file = os.path.join(args.output_dir, f"{im_id}.json")
             with open(dst_file, 'w') as fout:

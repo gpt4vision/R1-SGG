@@ -1,17 +1,17 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=2B_bs32_gh200_lr6e-7_refmodel
-#SBATCH --time=12:00:00
+#SBATCH --job-name=2B_bs32_gh200_lr6e-7_debug
+#SBATCH --time=00:20:00
 
-#SBATCH --nodes=4  # 2 nodes, each has 4x GH200                   
-#SBATCH --ntasks=4                   # Total tasks equals total nodes
+#SBATCH --nodes=1  # 2 nodes, each has 4x GH200                   
+#SBATCH --ntasks=1                   # Total tasks equals total nodes
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=288 # fixed for GH200
 
 #SBATCH --account=a-a03
-#SBATCH --partition=normal
+#SBATCH --partition=debug
 #SBATCH --output=RL_gh200_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
@@ -23,10 +23,10 @@ export WANDB_PROJECT=RL4SGG
 
 
 GPUS_PER_NODE=4
-GROUP_SIZE=8
+GROUP_SIZE=16
 MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-2b-grpo-g8-n1-sgg-bs32-lr6e-7-ref-gh200"
+RUN_NAME="qwen2vl-2b-grpo-debug-n1-sgg-bs16-lr6e-7-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -35,7 +35,7 @@ MAX_PIXELS=$((512 * 28 * 28))
 REF_MODEL_NAME=$1
 export LOG_PATH=${OUTPUT_DIR}/debug.log
 
-export STRICT_FORMAT=False
+export STRICT_FORMAT=True
 
 MASTER_PORT=29500
 
@@ -54,7 +54,6 @@ echo "Head Node IP: $HEAD_NODE_IP"
 TRAIN_CMD="open_r1/grpo.py \
     --output_dir ${OUTPUT_DIR} \
     --task_type sgg \
-    --ref_model_name ${REF_MODEL_NAME} \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
@@ -79,7 +78,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --save_steps 100 \
     --num_generations ${GROUP_SIZE} \
     --num_iterations 1 \
-    --beta 0.04 \
+    --beta 0.00 \
     --vllm_max_model_len 4096 \
     --vllm_gpu_memory_utilization 0.2 \
     --save_only_model true \

@@ -260,14 +260,11 @@ def main():
         with open(file_path, 'r') as f:
             preds.append(json.load(f))
             
-    is_qwen2vl = True # normalize bbox to [0, 1000]
-    print("is_qwen2vl:", is_qwen2vl)
-    if is_qwen2vl:
-        if not is_psg:
-            db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
-        else:
-            db_raw = load_dataset("JosephZ/psg_test_sg")['train']
-        db = {e['image_id']: e for e in tqdm(db_raw, desc="Loading dataset")}
+    if not is_psg:
+        db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+    else:
+        db_raw = load_dataset("JosephZ/psg_test_sg")['train']
+    db = {e['image_id']: e for e in tqdm(db_raw, desc="Loading dataset")}
 
 
     fails = [0, 0]
@@ -295,9 +292,9 @@ def main():
         im_id = item['image_id']
         all_im_ids.append(im_id)
         image = db[im_id]['image']
-        if is_qwen2vl: # for Qwen2VL, the output is normalized to [0, 1000]
-            iw, ih = image.size
-            scale_factors = (iw / 1000.0, ih / 1000.0)
+        iw, ih = image.size
+        box_scale = item['box_scale'] if "box_scale" in item else [1000.0, 1000.0] # Qwen2-VL use a normalization [0, 1000]
+        scale_factors = (iw / box_scale[0], ih / box_scale[1])
     
         gt_objs = json.loads(item['gt_objects'])
         gt_rels = json.loads(item['gt_relationships'])
@@ -317,8 +314,7 @@ def main():
                 assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
                 assert 'id' in obj, "invalid obj:{}".format(obj)
                 assert isinstance(obj['id'], str), f"invalid obj:{obj}"
-                if is_qwen2vl:
-                    obj['bbox'] = scale_box(obj['bbox'], scale_factors)
+                obj['bbox'] = scale_box(obj['bbox'], scale_factors)
 
                 pred_objs_.append({'id': refine_node_edge(obj['id']), 'bbox': obj['bbox']})
             pred_objs = pred_objs_

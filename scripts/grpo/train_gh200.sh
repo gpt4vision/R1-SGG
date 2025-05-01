@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=7B_GH200_zero_lr2x_2k
+#SBATCH --job-name=7B_GH200_zero_lr2x_fp8
 #SBATCH --time=12:00:00
 
 #SBATCH --exclude=nid006792,nid007085
@@ -30,7 +30,7 @@ GPUS_PER_NODE=4
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-7B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-7b-grpo-2k-lr6e-7-g8-n1-bs32-gh200"
+RUN_NAME="qwen2vl-7b-grpo-2k-lr6e-7-g8-n1-bs32-fp8-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -66,11 +66,12 @@ echo "MASTER_ADDR: $MASTER_ADDR"
 #  batch size: 16*1*4*4 //8=32
 TRAIN_CMD="open_r1/grpo.py \
     --task_type sgg \
+    --use_fp8 true \
     --output_dir ${OUTPUT_DIR} \
     --model_name_or_path ${MODEL_PATH} \
     --dataset_name ${DATA_PATH} \
     --max_prompt_length 2048 \
-    --max_completion_length 2048 \
+    --max_completion_length 1024 \
     --custom_per_device_train_batch_size 8 \
     --deepspeed ./local_scripts/zero2_offload.json \
     --gradient_accumulation_steps 1 \
@@ -100,9 +101,32 @@ TRAIN_CMD="open_r1/grpo.py \
     
 echo "start training with CMD=${TRAIN_CMD} ..."
 
-srun torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
-    --node_rank ${SLURM_NODEID} \
-    --rdzv_id $RANDOM \
-    --rdzv_backend c10d \
-    --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
-    ${TRAIN_CMD}
+WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_TRAIN_NODES))
+
+
+LAUNCHER="accelerate launch \
+    --multi_gpu \
+    --num_machines $NUM_TRAIN_NODES \
+    --num_processes $WORLD_SIZE \
+    --main_process_ip "$MASTER_ADDR" \
+    --main_process_port $MASTER_PORT \
+    --num_processes $WORLD_SIZE \
+    --machine_rank $SLURM_PROCID \
+    --role $SLURMD_NODENAME: \
+    --rdzv_conf rdzv_backend=c10d \
+    --rdzv_timeout 3600 \
+    --max_restarts 0 \
+    --tee 3 \
+    --mixed_precision fp8 \
+"
+
+
+srun --jobid $SLURM_JOB_ID bash -c "$LAUNCHER $TRAIN_CMD"
+
+#srun torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
+#    --node_rank ${SLURM_NODEID} \
+#    --rdzv_id $RANDOM \
+#    --rdzv_backend c10d \
+#    --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
+#    --rdzv_timeout 3600 \
+#    ${TRAIN_CMD}

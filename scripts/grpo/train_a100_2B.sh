@@ -1,11 +1,11 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=A100_2B_1k_lr6e-7_psg
-#SBATCH --time=24:00:00
+#SBATCH --job-name=A100_2B_1k_lr6e-7_psg_debug
+#SBATCH --time=00:30:00
 
 #SBATCH --exclude=nid002289,nid002325
-#SBATCH --nodes=4  # 4 nodes, each has 4x A100  
+#SBATCH --nodes=2  # 4 nodes, each has 4x A100  
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=128
@@ -31,7 +31,7 @@ MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
 #DATA_PATH="JosephZ/vg150_train_sgg_prompt"
 DATA_PATH="JosephZ/psg_train_sg"
 
-RUN_NAME="qwen2vl-2b-grpo-g8-n1-bs32-1k-lr6e-7-psg-A100-SXM4"
+RUN_NAME="qwen2vl-2b-grpo-g8-n1-bs32-1k-lr6e-7-psg-debug-A100-SXM4"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 

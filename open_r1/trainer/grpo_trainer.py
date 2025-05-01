@@ -39,6 +39,7 @@ from torch.utils.data import DataLoader
 import transformers
 from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
 from transformers.trainer_utils import seed_worker
+from transformers import FineGrainedFP8Config
 
 from datasets import Dataset, IterableDataset
 from packaging import version
@@ -310,6 +311,7 @@ class GRPOTrainerV2(Trainer):
         data_collator=None,
         model_type: str = "qwen2vl",
         self_evaluation: Optional[Callable[[list[Any]], Any]] = None,
+        use_fp8: bool = False
     ):
         # Args
         if args is None:
@@ -319,6 +321,8 @@ class GRPOTrainerV2(Trainer):
 
         # Models
         # Trained model
+        self.use_fp8 = use_fp8
+             
         self.is_qwen2vl = False
         self.model_type = model_type.lower()
         model_init_kwargs = args.model_init_kwargs or {}
@@ -339,6 +343,9 @@ class GRPOTrainerV2(Trainer):
             model_init_kwargs["use_cache"] = (
                 False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
             )
+            if self.use_fp8:
+                model_init_kwargs['quantization_config'] = FineGrainedFP8Config()
+
             if self.model_type in ["qwen2vl", "qwen-2-vl"]:
                 self.is_qwen2vl = True
                 model = Qwen2VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
@@ -569,7 +576,8 @@ class GRPOTrainerV2(Trainer):
                                               device='cuda:%s'%self.accelerator.local_process_index,
                                               log_file=args.vllm_log_file,
                                               min_pixels=min_pixels,
-                                              max_pixels=max_pixels
+                                              max_pixels=max_pixels,
+                                              use_fp8=self.use_fp8
                                              )
             else:
                 vllm_server_hosts = args.vllm_server_host 

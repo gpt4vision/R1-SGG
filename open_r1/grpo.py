@@ -50,7 +50,7 @@ from trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PRO
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 LOG_PATH = os.getenv("LOG_PATH", "debug.log")
 
-STRICT_FORMAT = os.getenv("STRICT_FORMAT", "false").lower() == "true"
+STRICT_FORMAT = os.getenv("STRICT_FORMAT", "true").lower() == "true"
 
 # Load spaCy model (with word vectors)
 try:
@@ -64,9 +64,9 @@ SEM_WEIGHT = 1.0
 IOU_WEIGHT = 2.0
 BOX_L1_WEIGHT = 5.0
 
-FORMAT_REWARD_WEIGHT = float(os.getenv("FORMAT_REWARD_WEIGHT", 1.0))
-NODE_REWARD_WEIGHT = float(os.getenv("NODE_REWARD_WEIGHT", 2.0))
-EDGE_REWARD_WEIGHT = float(os.getenv("EDGE_REWARD_WEIGHT", 5.0))
+FORMAT_REWARD_WEIGHT = float(os.getenv("FORMAT_REWARD_WEIGHT", '1.0'))
+NODE_REWARD_WEIGHT = float(os.getenv("NODE_REWARD_WEIGHT", '2.0'))
+EDGE_REWARD_WEIGHT = float(os.getenv("EDGE_REWARD_WEIGHT", '5.0'))
 
 VG150_BASE_OBJ_CATEGORIES = set(['tile', 'drawer', 'men', 'railing', 'stand', 'towel', 'sneaker', 'vegetable', 'screen', 'vehicle', 'animal', 'kite', 'cabinet', 'sink', 'wire', 'fruit', 'curtain', 'lamp', 'flag', 'pot', 'sock', 'boot', 'guy', 'kid', 'finger', 'basket', 'wave', 'lady', 'orange', 'number', 'toilet', 'post', 'room', 'paper', 'mountain', 'paw', 'banana', 'rock', 'cup', 'hill', 'house', 'airplane', 'plant', 'skier', 'fork', 'box', 'seat', 'engine', 'mouth', 'letter', 'windshield', 'desk', 'board', 'counter', 'branch', 'coat', 'logo', 'book', 'roof', 'tie', 'tower', 'glove', 'sheep', 'neck', 'shelf', 'bottle', 'cap', 'vase', 'racket', 'ski', 'phone', 'handle', 'boat', 'tire', 'flower', 'child', 'bowl', 'pillow', 'player', 'trunk', 'bag', 'wing', 'light', 'laptop', 'pizza', 'cow', 'truck', 'jean', 'eye', 'arm', 'leaf', 'bird', 'surfboard', 'umbrella', 'food', 'people', 'nose', 'beach', 'sidewalk', 'helmet', 'face', 'skateboard', 'motorcycle', 'clock', 'bear'])
 
@@ -143,9 +143,17 @@ class GRPOScriptArguments(ScriptArguments):
         default=False,
         metadata={"help": "Whether to place <think>...</think> in the user's prompt."}
     )
+    disable_think_tags: bool=field(
+        default=False,
+        metadata={"help": "Whether to disable <think> tags."}
+    )
     use_ovdr_split: bool = field(
         default=False,
         metadata={"help": "Whether to use ovdr split for the dataset."}
+    )
+    use_fp8: bool=field(
+        default=False, 
+        metadata={"help": "Whether to use FP8 for training."}
     )
 
 
@@ -845,11 +853,12 @@ def main(script_args, training_args, model_args):
         return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats, task_type=["sgg"], use_think_prompt_inplace=False):
+        def __init__(self, processor, use_predefined_cats, task_type=["sgg"], use_think_prompt_inplace=False, disable_think_tags=False):
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self.task_type = task_type
             self.use_think_prompt_inplace = use_think_prompt_inplace
+            self.disable_think_tags = disable_think_tags
 
         def __call__(self, examples):
             batch = []
@@ -897,8 +906,9 @@ def main(script_args, training_args, model_args):
                 elif task_type == 'cls':
                     org_prompt = PROMPT_CLS.replace(OBJ_HOLDER, "[" + ",".join([json.dumps(e) for e in gt_objs_int]) + "]")
 
+                system_prompt = "You are a helpful and multimodal AI assistant." if self.use_think_prompt_inplace or self.disable_think_tags else SYSTEM_PROMPT
                 prompt = [
-                    {"role": "system", "content": SYSTEM_PROMPT if not self.use_think_prompt_inplace else "You are a helpful and multimodal AI assistant."},
+                    {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
                         "content": [
@@ -955,7 +965,9 @@ def main(script_args, training_args, model_args):
     collator_instance = Collator(processor, 
                                  use_predefined_cats=script_args.use_predefined_cats, 
                                  task_type=script_args.task_type, 
-                                 use_think_prompt_inplace=script_args.use_think_prompt_inplace)
+                                 use_think_prompt_inplace=script_args.use_think_prompt_inplace,
+                                 disable_think_tags=script_args.disable_think_tags,
+                                )
 
     print("*" * 100)
     print(f"rank={rank}, world size={world_size}, len(dataset)={len(dataset)}, dataset[0]:", collator_instance([dataset[0]]))
@@ -995,10 +1007,19 @@ def main(script_args, training_args, model_args):
         data_collator=collator_instance,
         processing_class=processor,
         model_type="qwen2vl", #hack
+        use_fp8=script_args.use_fp8
     )
     # Check for existing checkpoint
     def find_valid_checkpoint(output_dir):
-        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")), key=lambda x:int(x.split('checkpoint-')[1]))
+        ckpt_re = re.compile(r"checkpoint-(\d+)$")      # ↳ ends right after the digits
+        
+        checkpoints = sorted(
+            [
+                p for p in glob.glob(os.path.join(output_dir, "checkpoint-*"))
+                if ckpt_re.search(os.path.basename(p))   # keep only pure-numeric checkpoints
+            ],
+            key=lambda p: int(ckpt_re.search(os.path.basename(p)).group(1))
+        )
         for ckpt in reversed(checkpoints):  # Check latest first
             if glob.glob(os.path.join(ckpt, "global_step*")):
                 return ckpt

@@ -107,7 +107,7 @@ def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=T
     if use_predefined_cats:
         prompt = sample['prompt_close'] # w. pre-defined categories
     else:
-        prompt = sample['prompt_open'] if 'prompt_open' in sample else PROMPT_SG_OPEN
+        prompt = PROMPT_SG_OPEN
 
     if remove_image_size_in_prompt:
         prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
