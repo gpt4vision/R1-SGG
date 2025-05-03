@@ -343,9 +343,6 @@ class GRPOTrainerV2(Trainer):
             model_init_kwargs["use_cache"] = (
                 False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
             )
-            if self.use_fp8:
-                model_init_kwargs['quantization_config'] = FineGrainedFP8Config()
-
             if self.model_type in ["qwen2vl", "qwen-2-vl"]:
                 self.is_qwen2vl = True
                 model = Qwen2VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)

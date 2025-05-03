@@ -940,28 +940,30 @@ def main(script_args, training_args, model_args):
 
     model_type=None
     base_name = None
-    if 'qwen2vl' in model_args.model_name_or_path.lower() or 'qwen2-vl' in model_args.model_name_or_path or \
-       'qwen-2-vl' in model_args.model_name_or_path:
+      
+
+    model_name = model_args.model_name_or_path.lower()
+    
+    if any(key in model_name for key in ['qwen2vl', 'qwen2-vl', 'qwen-2-vl']):
         model_type = "qwen2vl"
-        base_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in model_args.model_name_or_path.lower() else "Qwen/Qwen2-VL-2B-Instruct"
-        if '7b' in model_args.model_name_or_path.lower():
+        if '7b' in model_name:
             base_name = "Qwen/Qwen2-VL-7B-Instruct"
-        elif '2b' in model_args.model_name_or_path.lower():
+        elif '2b' in model_name:
             base_name = "Qwen/Qwen2-VL-2B-Instruct"
         else:
-            raise Exception("Unknown model:{}".format(model_args.model_name_or_path.lower()))
-    elif 'qwen2.5vl' in model_args.model_name_or_path.lower() or 'qwen2.5-vl' in model_args.model_name_or_path.lower() or \
-         'qwen2-5-vl' in model_args.model_name_or_path.lower() or 'qwen-2.5-vl' in model_args.model_name_or_path.lower():
-        model_type = 'qwen2.5vl'
-        if '7b' in model_args.model_name_or_path.lower():
+            raise Exception(f"Unknown model size in: {model_name}")
+    
+    elif any(key in model_name for key in ['qwen2.5vl', 'qwen2.5-vl', 'qwen2-5-vl', 'qwen-2.5-vl']):
+        model_type = "qwen2.5vl"
+        if '7b' in model_name:
             base_name = "Qwen/Qwen2.5-VL-7B-Instruct"
-        elif '3b' in model_args.model_name_or_path.lower():
+        elif '3b' in model_name:
             base_name = "Qwen/Qwen2.5-VL-3B-Instruct"
-        else: 
-            raise Exception("Unknown model:{}".format(model_args.model_name_or_path.lower()))
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+    
     else:
-        raise Exception("Unknown model type:{}".format(model_args.model_name_or_path))
-
+        raise Exception(f"Unknown model type: {model_args.model_name_or_path}")
 
 
     processor = AutoProcessor.from_pretrained(base_name, 

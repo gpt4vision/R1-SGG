@@ -24,6 +24,8 @@ os.environ["NCCL_SOCKET_TIMEOUT"] = "3600000"  # 1 hours
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 
 
+from src.vg_synonyms import VG150_OBJ_CATEGORIES, VG150_PREDICATES
+
 from open_r1.trainer.utils.misc import encode_image_to_base64, is_pil_image
 
 SYSTEM_PROMPT = (
@@ -35,15 +37,31 @@ SYSTEM_PROMPT = (
 
 PROMPT_SG='Generate a structured scene graph for an image using the following format:\n\n```json\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n```\n\n### **Guidelines:**\n- **Objects:**\n  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).\n  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n```json\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n```\n\nNow, generate the complete scene graph for the provided image:\n'
 
-PROMPT_SG_25 ='Generate a structured scene graph for an image using the following format:\n\n```json\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n```\n\n### **Guidelines:**\n- **Objects:**\n  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).\n  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n```json\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n```\n\nNow, generate the complete scene graph for the provided image:\n'
+
+PROMPT_CLOSE='Generate a structured scene graph for an image using the specified object and relationship categories.\n\n### **Output Format:**\n<answer>\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n</answer>\n\n### **Guidelines:**\n- **Objects:**\n  - Assign unique IDs in the format `"object_name.number"` (e.g., `"person.1"`). The **object_name** must belong to the predefined object set: `{OBJ_CLS}`.\n  - Provide a bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Define relationships using `"subject"`, `"predicate"`, and `"object"`.\n  - The **predicate** must belong to the predefined relationship set: `{REL_CLS}`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n<answer>\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n</answer>\n\nNow, generate the complete scene graph for the provided image:\n'
 
 
+
+def refine_node_edge(obj):
+    obj = obj.replace("_", " ").replace("-", " ")
+    return obj.strip().lower()
+
+psg_categories = json.load(open("src/psg_categories.json"))
+PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+PSG_OBJ_CATEGORIES = [refine_node_edge(e) for e in PSG_OBJ_CATEGORIES]
+PSG_REL_CATEGORIES = [refine_node_edge(e) for e in psg_categories['predicate_classes']]
+
+PROMPT_CLOSE_PSG = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(PSG_OBJ_CATEGORIES)).replace(
+                   "{REL_CLS}", json.dumps(PSG_REL_CATEGORIES))
+
+PROMPT_CLOSE_VG150 = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(VG150_OBJ_CATEGORIES[1:])).replace(
+                   "{REL_CLS}", json.dumps(VG150_PREDICATES[1:]))
 
 
 
 def get_model(name, device_map="auto", max_model_len=4096):
     is_qwen2vl = 'qwen2vl' in name.lower() or 'qwen2-vl' in name.lower()
-    is_qwen25vl = 'qwen2.5-vl' in name.lower() or 'qwen25-vl' in name.lower()
+    is_qwen25vl = 'qwen2.5-vl' in name.lower() or 'qwen25-vl' in name.lower() or 'qwen2.5vl' in name.lower()
     base_model_name = None
     if is_qwen2vl or is_qwen25vl:
         print("Using model:", name)
@@ -82,17 +100,17 @@ def get_model(name, device_map="auto", max_model_len=4096):
     else:
         raise Exception(f"Unknown model_id: {name}")
 
-    return model, processor 
+    return is_qwen2vl, is_qwen25vl, model, processor 
 
 
 def replace_answer_format(item: str) -> str:
     return item.replace("<answer>", "```json").replace("</answer>", "```")
 
-def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False, remove_image_size_in_prompt=True):
+def format_data(dataset_name, sample, use_predefined_cats=False, use_think_system_prompt=False, remove_image_size_in_prompt=True):
     image = sample['image'].convert('RGB')
     iw, ih = image.size
     if use_predefined_cats:
-        prompt = sample['prompt_close']
+        prompt = PROMPT_CLOSE_PSG if 'psg' in dataset_name else PROMPT_CLOSE_VG150
     else:
         prompt = PROMPT_SG
 
@@ -145,11 +163,9 @@ def main():
     rank = torch.distributed.get_rank()  # GPU ID or node rank
     world_size = torch.distributed.get_world_size()  # Total number of GPUs/nodes
 
-    is_qwen2vl = 'qwen2vl' in args.model.lower() or 'qwen2-vl' in args.model.lower()
-    is_qwen25vl = 'qwen2.5-vl' in args.model.lower() or 'qwen25-vl' in args.model.lower()
 
     # Load the model and processor.
-    model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
+    is_qwen2vl, is_qwen25vl, model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
     sampling_params = SamplingParams(
         temperature=0.01,
         top_k=1,
@@ -161,7 +177,9 @@ def main():
     print(f"model_id: {args.model}", " generation_config:", sampling_params)
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats, use_think_system_prompt):
+        def __init__(self, data_name, 
+                     processor, use_predefined_cats, use_think_system_prompt):
+            self.data_name = data_name
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self.use_think_system_prompt = use_think_system_prompt
@@ -174,7 +192,7 @@ def main():
             llm_inputs = []
             images = []
             for example in examples:
-                image, prompt = format_data(example, 
+                image, prompt = format_data(self.data_name, example, 
                                      use_predefined_cats=self.use_predefined_cats, 
                                      use_think_system_prompt=self.use_think_system_prompt)
 
@@ -219,14 +237,14 @@ def main():
     subset = dataset.select(range(start_idx, end_idx))  # Select subset for this GPU
     print("*"*100, "\n rank:", rank, " world size:", world_size,
             "subset from", start_idx, " to ", end_idx, "\n", 
-            "\n data[0]:", format_data(dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
+            "\n data[0]:", format_data(dataset.data_name, dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
             "*"*100)
 
     data_loader = DataLoader(
                              subset, 
                              batch_size=args.batch_size, 
                              shuffle=False, 
-                             collate_fn=Collator(processor, 
+                             collate_fn=Collator(args.dataset, processor, 
                                                  use_predefined_cats=args.use_predefined_cats, 
                                                  use_think_system_prompt=args.use_think_system_prompt),
                              pin_memory=True

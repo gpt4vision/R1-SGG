@@ -17,15 +17,18 @@
 Supervised fine-tuning script for decoder language models.
 
 """
+import os
 import json
 import random
 from tqdm import tqdm
 import torch
 import math
 from dataclasses import dataclass, field
+import re
+import glob
 
 from accelerate import Accelerator
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from transformers import AutoTokenizer, AutoProcessor
 from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
 
@@ -109,6 +112,8 @@ def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=T
     else:
         prompt = PROMPT_SG_OPEN
 
+    use_think = 'think' in sample
+
     if remove_image_size_in_prompt:
         prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
 
@@ -123,6 +128,8 @@ def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=T
         objs.append(obj)
 
     answer = format_answer(objs, sample["relationships"], shuffle=shuffle)
+    if use_think:
+        answer = '{}<answer>\n{}\n</answer>'.format(sample['think'], answer)
 
     messages = [
         {
@@ -161,10 +168,11 @@ def main():
     script_args, training_args, model_args = parser.parse_args_and_config()
 
     # load dataset 
-    train_dataset = load_dataset(script_args.dataset_name)['train']
-    #split_db = dataset.train_test_split(test_size=0.01, seed=42)
-    #train_dataset = split_db["train"]
-    #val_dataset = split_db["test"]
+    try:
+        train_dataset = load_dataset(script_args.dataset_name)['train']
+    except:
+        train_dataset = load_from_disk(script_args.dataset_name)
+
     print(f"Training set size: {len(train_dataset)}")
     #print(f"Validation set size: {len(val_dataset)}")
     print("Train set[0]:", format_data(train_dataset[0], use_predefined_cats=script_args.use_predefined_cats))
@@ -262,7 +270,29 @@ def main():
         data_collator=Collator(processor, script_args.use_predefined_cats),
         peft_config=get_peft_config(model_args),
     )
-    trainer.train()
+    # Check for existing checkpoint
+    def find_valid_checkpoint(output_dir):
+        ckpt_re = re.compile(r"checkpoint-(\d+)$")      # ↳ ends right after the digits
+        
+        checkpoints = sorted(
+            [
+                p for p in glob.glob(os.path.join(output_dir, "checkpoint-*"))
+                if ckpt_re.search(os.path.basename(p))   # keep only pure-numeric checkpoints
+            ],
+            key=lambda p: int(ckpt_re.search(os.path.basename(p)).group(1))
+        )
+        for ckpt in reversed(checkpoints):  # Check latest first
+            if glob.glob(os.path.join(ckpt, "global_step*")):
+                return ckpt
+        return None
+    
+    ckpt_to_resume = find_valid_checkpoint(training_args.output_dir)
+    if ckpt_to_resume:
+        print(f"[INFO] Resuming from checkpoint: {ckpt_to_resume}")
+        trainer.train(resume_from_checkpoint=ckpt_to_resume)
+    else:
+        print("[INFO] Starting training from scratch")
+        trainer.train()
 
     # Save and push to hub
     trainer.save_model(training_args.output_dir)
