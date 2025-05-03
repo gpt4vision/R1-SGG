@@ -26,12 +26,14 @@ import math
 from dataclasses import dataclass, field
 import re
 import glob
+from typing import Optional
 
 from accelerate import Accelerator
 from datasets import load_dataset, load_from_disk
 
 from transformers import (
-    AutoProcessor,
+    AutoProcessor, 
+    Qwen2VLProcessor,
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
 )
@@ -178,6 +180,14 @@ class CustomScriptArguments(ScriptArguments):
         default=False, 
         metadata={"help": "Whether to use predefined object categories"}
     )
+    max_pixels: Optional[int] = field(
+        default=1024*28*28,
+        metadata={"help": "Maximum number of pixels for the image"},
+    )
+    min_pixels: Optional[int] = field(
+        default=4*28*28,
+        metadata={"help": "Minimum number of pixels for the image"},
+    )
 
 
 
@@ -211,8 +221,6 @@ def main():
     )
     training_args.model_init_kwargs = model_kwargs
 
-    min_pixels = 3136
-    max_pixels = 1024 * 28 * 28
 
     model_type=None
     base_name = None
