@@ -50,7 +50,9 @@ from trl import (
 from qwen_vl_utils import process_vision_info
 
 #---------------------- prompt templates ----------------------------
-from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150 
+from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE_TEMPLATE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150 
+
+from src.mega_1m_category import megasg_object_categories, megasg_relation_categories
 #---------------------------------------------------------------------------
 
 
@@ -116,7 +118,17 @@ def format_data(dataset_name, sample, use_predefined_cats=False, remove_image_si
         if 'prompt_close' in sample:
             prompt = sample['prompt_close']
         else:
-            prompt = PROMPT_CLOSE_PSG if 'psg' in dataset_name else PROMPT_CLOSE_VG150
+            if 'psg' in dataset_name:
+                prompt = PROMPT_CLOSE_PSG
+            elif 'vg' in dataset_name:
+                prompt = PROMPT_CLOSE_VG150
+            elif 'mega' in dataset_name:
+                obj_sets = megasg_object_categories[sample['data_source']]
+                rel_sets = megasg_relation_categories[sample['data_source']]
+                prompt = PROMPT_CLOSE_TEMPLATE.replace("{OBJ_CLS}", json.dumps(obj_sets)).replace(
+                   "{REL_CLS}", json.dumps(rel_sets))
+            else:
+                raise Exception("Unsupported dataset:{}".format(dataset_name))
     else:
         prompt = PROMPT_SG
 

@@ -45,8 +45,7 @@ from functools import lru_cache
 from open_r1.trainer.utils.misc import encode_image_to_base64
 
 #---------------------- prompt templates ----------------------------
-from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150, VG150_BASE_OBJ_CATEGORIES, VG150_BASE_PREDICATE
-
+from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE_TEMPLATE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150, VG150_BASE_OBJ_CATEGORIES, VG150_BASE_PREDICATE
 #---------------------------------------------------------------------------
 
 # Set DEBUG_MODE flag and log path once
