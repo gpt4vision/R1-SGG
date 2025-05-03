@@ -46,7 +46,23 @@ from trl import (
 from qwen_vl_utils import process_vision_info
 
 from open_r1.trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PROMPT_SG, PROMPT_SG_OPEN
+from src.vg_synonyms import VG150_OBJ_CATEGORIES, VG150_PREDICATES
 
+
+PROMPT_CLOSE='Generate a structured scene graph for an image using the specified object and relationship categories.\n\n### **Output Format:**\n<answer>\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n</answer>\n\n### **Guidelines:**\n- **Objects:**\n  - Assign unique IDs in the format `"object_name.number"` (e.g., `"person.1"`). The **object_name** must belong to the predefined object set: `{OBJ_CLS}`.\n  - Provide a bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Define relationships using `"subject"`, `"predicate"`, and `"object"`.\n  - The **predicate** must belong to the predefined relationship set: `{REL_CLS}`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n<answer>\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n</answer>\n\nNow, generate the complete scene graph for the provided image:\n'
+
+
+
+
+psg_categories = json.load(open("src/psg_categories.json"))
+PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+PSG_REL_CATEGORIES = psg_categories['predicate_classes']
+
+PROMPT_CLOSE_PSG = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(PSG_OBJ_CATEGORIES)).replace(
+                   "{REL_CLS}", json.dumps(PSG_REL_CATEGORIES))
+
+PROMPT_CLOSE_VG150 = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(VG150_OBJ_CATEGORIES[1:])).replace(
+                   "{REL_CLS}", json.dumps(VG150_PREDICATES[1:]))
 
 
 def format_answer(objects:str, relationships:str, shuffle=False):
@@ -102,13 +118,13 @@ def format_answer(objects:str, relationships:str, shuffle=False):
 def replace_answer_format(item: str) -> str:
     return item.replace("<answer>", "```json").replace("</answer>", "```")
 
-def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=True, shuffle=False):
+def format_data(dataset_name, sample, use_predefined_cats=False, remove_image_size_in_prompt=True, shuffle=False):
     """Prepare dataset example for training."""
 
     image = sample["image"].convert('RGB')
     iw, ih = image.size
     if use_predefined_cats:
-        prompt = sample['prompt_close'] # w. pre-defined categories
+        prompt = PROMPT_CLOSE_PSG if 'psg' in dataset_name else PROMPT_CLOSE_VG150
     else:
         prompt = PROMPT_SG_OPEN
 
@@ -175,7 +191,7 @@ def main():
 
     print(f"Training set size: {len(train_dataset)}")
     #print(f"Validation set size: {len(val_dataset)}")
-    print("Train set[0]:", format_data(train_dataset[0], use_predefined_cats=script_args.use_predefined_cats))
+    print("Train set[0]:", format_data(script_args.dataset_name, train_dataset[0], use_predefined_cats=script_args.use_predefined_cats))
 
     
     # model config.
@@ -201,7 +217,8 @@ def main():
 
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats):
+        def __init__(self, dataset_name, processor, use_predefined_cats):
+            self.dataset_name = dataset_name
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self._db = {}
@@ -214,7 +231,7 @@ def main():
                     self._db[str(example)] = 0
 
                 shuffle = (self._db[str(example)] > 0) & (random.random() > 0.5)
-                format_example = format_data(example, use_predefined_cats=self.use_predefined_cats, shuffle=shuffle)['messages']
+                format_example = format_data(self.dataset_name, example, use_predefined_cats=self.use_predefined_cats, shuffle=shuffle)['messages']
                 self._db[str(example)] += 1
 
                 text = self.processor.apply_chat_template(format_example, tokenize=False)
@@ -267,7 +284,7 @@ def main():
         train_dataset=train_dataset, 
         eval_dataset=None, #val_dataset,
         processing_class=processor.tokenizer,
-        data_collator=Collator(processor, script_args.use_predefined_cats),
+        data_collator=Collator(script_args.dataset_name, processor, script_args.use_predefined_cats),
         peft_config=get_peft_config(model_args),
     )
     # Check for existing checkpoint

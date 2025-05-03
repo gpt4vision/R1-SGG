@@ -42,14 +42,10 @@ PROMPT_CLOSE='Generate a structured scene graph for an image using the specified
 
 
 
-def refine_node_edge(obj):
-    obj = obj.replace("_", " ").replace("-", " ")
-    return obj.strip().lower()
 
 psg_categories = json.load(open("src/psg_categories.json"))
 PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
-PSG_OBJ_CATEGORIES = [refine_node_edge(e) for e in PSG_OBJ_CATEGORIES]
-PSG_REL_CATEGORIES = [refine_node_edge(e) for e in psg_categories['predicate_classes']]
+PSG_REL_CATEGORIES = psg_categories['predicate_classes']
 
 PROMPT_CLOSE_PSG = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(PSG_OBJ_CATEGORIES)).replace(
                    "{REL_CLS}", json.dumps(PSG_REL_CATEGORIES))
