@@ -29,8 +29,12 @@ import glob
 
 from accelerate import Accelerator
 from datasets import load_dataset, load_from_disk
-from transformers import AutoTokenizer, AutoProcessor
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
+
+from transformers import (
+    AutoProcessor,
+    Qwen2VLForConditionalGeneration,
+    Qwen2_5_VLForConditionalGeneration,
+)
 
 from trl import (
     ModelConfig,
@@ -45,24 +49,9 @@ from trl import (
 
 from qwen_vl_utils import process_vision_info
 
-from open_r1.trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PROMPT_SG, PROMPT_SG_OPEN
-from src.vg_synonyms import VG150_OBJ_CATEGORIES, VG150_PREDICATES
-
-
-PROMPT_CLOSE='Generate a structured scene graph for an image using the specified object and relationship categories.\n\n### **Output Format:**\n<answer>\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n</answer>\n\n### **Guidelines:**\n- **Objects:**\n  - Assign unique IDs in the format `"object_name.number"` (e.g., `"person.1"`). The **object_name** must belong to the predefined object set: `{OBJ_CLS}`.\n  - Provide a bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Define relationships using `"subject"`, `"predicate"`, and `"object"`.\n  - The **predicate** must belong to the predefined relationship set: `{REL_CLS}`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n<answer>\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n</answer>\n\nNow, generate the complete scene graph for the provided image:\n'
-
-
-
-
-psg_categories = json.load(open("src/psg_categories.json"))
-PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
-PSG_REL_CATEGORIES = psg_categories['predicate_classes']
-
-PROMPT_CLOSE_PSG = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(PSG_OBJ_CATEGORIES)).replace(
-                   "{REL_CLS}", json.dumps(PSG_REL_CATEGORIES))
-
-PROMPT_CLOSE_VG150 = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(VG150_OBJ_CATEGORIES[1:])).replace(
-                   "{REL_CLS}", json.dumps(VG150_PREDICATES[1:]))
+#---------------------- prompt templates ----------------------------
+from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150 
+#---------------------------------------------------------------------------
 
 
 def format_answer(objects:str, relationships:str, shuffle=False):
@@ -124,9 +113,12 @@ def format_data(dataset_name, sample, use_predefined_cats=False, remove_image_si
     image = sample["image"].convert('RGB')
     iw, ih = image.size
     if use_predefined_cats:
-        prompt = PROMPT_CLOSE_PSG if 'psg' in dataset_name else PROMPT_CLOSE_VG150
+        if 'prompt_close' in sample:
+            prompt = sample['prompt_close']
+        else:
+            prompt = PROMPT_CLOSE_PSG if 'psg' in dataset_name else PROMPT_CLOSE_VG150
     else:
-        prompt = PROMPT_SG_OPEN
+        prompt = PROMPT_SG
 
     use_think = 'think' in sample
 
@@ -207,14 +199,48 @@ def main():
     )
     training_args.model_init_kwargs = model_kwargs
 
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        model_args.model_name_or_path, **model_kwargs
-    )
     min_pixels = 3136
     max_pixels = 1024 * 28 * 28
-    processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
-                    min_pixels=min_pixels, max_pixels=max_pixels)
 
+    model_type=None
+    base_name = None
+    model_name = model_args.model_name_or_path.lower()
+
+    if any(key in model_name for key in ['qwen2vl', 'qwen2-vl', 'qwen-2-vl']):
+        model_type = "qwen2vl"
+        if '7b' in model_name:
+            base_name = "Qwen/Qwen2-VL-7B-Instruct"
+        elif '2b' in model_name:
+            base_name = "Qwen/Qwen2-VL-2B-Instruct"
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+
+    elif any(key in model_name for key in ['qwen2.5vl', 'qwen2.5-vl', 'qwen2-5-vl', 'qwen-2.5-vl']):
+        model_type = "qwen2.5vl"
+        if '7b' in model_name:
+            base_name = "Qwen/Qwen2.5-VL-7B-Instruct"
+        elif '3b' in model_name:
+            base_name = "Qwen/Qwen2.5-VL-3B-Instruct"
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+
+    else:
+        raise Exception(f"Unknown model type: {model_args.model_name_or_path}")
+
+    processor = AutoProcessor.from_pretrained(base_name,
+                    min_pixels=script_args.min_pixels,
+                    max_pixels=script_args.max_pixels)
+    model_cls = None
+    if model_type == "qwen2vl":
+        model_cls = Qwen2VLForConditionalGeneration
+    elif model_type == "qwen2.5vl":
+        model_cls = Qwen2_5_VLForConditionalGeneration
+
+    assert model_cls is not None, " Unsupported model:{}".format(model_args.model_name_or_path)
+
+    model = model_cls.from_pretrained(
+        model_args.model_name_or_path, **model_kwargs
+    )
 
     class Collator(object):
         def __init__(self, dataset_name, processor, use_predefined_cats):

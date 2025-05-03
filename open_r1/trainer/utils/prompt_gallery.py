@@ -1,106 +1,31 @@
 
-PROMPT_SG_OPEN ='Generate a structured scene graph for an image using the following format:\n\n```json\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n```\n\n### **Guidelines:**\n- **Objects:**\n  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).\n  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n```json\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n```\n\nNow, generate the complete scene graph for the provided image:\n'
+VG150_OBJ_CATEGORIES = ['__background__', 'airplane', 'animal', 'arm', 'bag', 'banana', 'basket', 'beach', 'bear', 'bed', 'bench', 'bike', 'bird', 'board', 'boat', 'book', 'boot', 'bottle', 'bowl', 'box', 'boy', 'branch', 'building', 'bus', 'cabinet', 'cap', 'car', 'cat', 'chair', 'child', 'clock', 'coat', 'counter', 'cow', 'cup', 'curtain', 'desk', 'dog', 'door', 'drawer', 'ear', 'elephant', 'engine', 'eye', 'face', 'fence', 'finger', 'flag', 'flower', 'food', 'fork', 'fruit', 'giraffe', 'girl', 'glass', 'glove', 'guy', 'hair', 'hand', 'handle', 'hat', 'head', 'helmet', 'hill', 'horse', 'house', 'jacket', 'jean', 'kid', 'kite', 'lady', 'lamp', 'laptop', 'leaf', 'leg', 'letter', 'light', 'logo', 'man', 'men', 'motorcycle', 'mountain', 'mouth', 'neck', 'nose', 'number', 'orange', 'pant', 'paper', 'paw', 'people', 'person', 'phone', 'pillow', 'pizza', 'plane', 'plant', 'plate', 'player', 'pole', 'post', 'pot', 'racket', 'railing', 'rock', 'roof', 'room', 'screen', 'seat', 'sheep', 'shelf', 'shirt', 'shoe', 'short', 'sidewalk', 'sign', 'sink', 'skateboard', 'ski', 'skier', 'sneaker', 'snow', 'sock', 'stand', 'street', 'surfboard', 'table', 'tail', 'tie', 'tile', 'tire', 'toilet', 'towel', 'tower', 'track', 'train', 'tree', 'truck', 'trunk', 'umbrella', 'vase', 'vegetable', 'vehicle', 'wave', 'wheel', 'window', 'windshield', 'wing', 'wire', 'woman', 'zebra']
 
 
+VG150_PREDICATES = ['__background__', "above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"]
 
-PROMPT_SG = """Generate a structured scene graph for an image using the following format:
-<think> [Describe your reasoning process here] </think><answer>
-```json
-{
-  "objects": [
-    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},
-    ...
-  ],
-  "relationships": [
-    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},
-    ...
-  ]
-}
-```
-</answer>
 
-### **Guidelines:**
-- **Objects:**
-  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).
-  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.
-  - Include all visible objects, even if they have no relationships.
+VG150_BASE_OBJ_CATEGORIES = set(['tile', 'drawer', 'men', 'railing', 'stand', 'towel', 'sneaker', 'vegetable', 'screen', 'vehicle', 'animal', 'kite', 'cabinet', 'sink', 'wire', 'fruit', 'curtain', 'lamp', 'flag', 'pot', 'sock', 'boot', 'guy', 'kid', 'finger', 'basket', 'wave', 'lady', 'orange', 'number', 'toilet', 'post', 'room', 'paper', 'mountain', 'paw', 'banana', 'rock', 'cup', 'hill', 'house', 'airplane', 'plant', 'skier', 'fork', 'box', 'seat', 'engine', 'mouth', 'letter', 'windshield', 'desk', 'board', 'counter', 'branch', 'coat', 'logo', 'book', 'roof', 'tie', 'tower', 'glove', 'sheep', 'neck', 'shelf', 'bottle', 'cap', 'vase', 'racket', 'ski', 'phone', 'handle', 'boat', 'tire', 'flower', 'child', 'bowl', 'pillow', 'player', 'trunk', 'bag', 'wing', 'light', 'laptop', 'pizza', 'cow', 'truck', 'jean', 'eye', 'arm', 'leaf', 'bird', 'surfboard', 'umbrella', 'food', 'people', 'nose', 'beach', 'sidewalk', 'helmet', 'face', 'skateboard', 'motorcycle', 'clock', 'bear'])
 
-- **Relationships:**
-  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.
-  - Omit relationships for orphan objects.
-
-### **Example Output:**
-<think> [Describe your reasoning process here] </think><answer>
-```json
-{
-  "objects": [:
-    {"id": "person.1", "bbox": [120, 200, 350, 700]},
-    {"id": "bike.2", "bbox": [100, 600, 400, 800]},
-    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},
-    {"id": "tree.4", "bbox": [500, 100, 750, 700]}
-  ],
-  "relationships": [
-    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},
-    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}
-  ]
-}
-```
-</answer>
-
-Now, generate the complete scene graph for the provided image using the format and tags above:
-"""
+VG150_BASE_PREDICATE = set(["between", "to", "made of", "looking at", "along", "laying on", "using", "carrying", "against", "mounted on", "sitting on", "flying in", "covering", "from", "over", "near", "hanging from", "across", "at", "above", "watching", "covered in", "wearing", "holding", "and", "standing on", "lying on", "growing on", "under", "on back of", "with", "has", "in front of", "behind", "parked on"])
 
 
 
 
-PROMPT_DET = """Given an image, detect all objects using the following format:
-```json
-{
- "objects":[
- {"id: "object_name.number", "bbox": [x1, y1, x2, y2]},
- ...
- ]
-}
-```
-### **Guidelines:**
-- Assign a unique ID for each object using the format `"object_name.nuber"` (e.g., `"person.1"`, `"cat.2"`).
-- Provide its bouding box `[x1, y1, x2, y2]` in integer pixel format.
-- Include all visible objects.
 
-### **Example Output:**
-```json
-{
-  "objects":[
-    {"id": "person.1", "bbox": [120, 200, 350, 700]},
-    {"id": "bike.2", "bbox": [100, 600, 400, 800]},
-    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},
-    {"id": "tree.4", "bbox": [500, 100, 750, 700]}
- ]
-}
-```
-Now, generate the result for the provided image:
-"""
+PROMPT_SG='Generate a structured scene graph for an image using the following format:\n\n```json\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n```\n\n### **Guidelines:**\n- **Objects:**\n  - Assign a unique ID for each object using the format `"object_name.number"` (e.g., `"person.1"`, `"bike.2"`).\n  - Provide its bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Represent interactions accurately using `"subject"`, `"predicate"`, and `"object"`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n```json\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n```\n\nNow, generate the complete scene graph for the provided image:\n'
+
+PROMPT_CLOSE='Generate a structured scene graph for an image using the specified object and relationship categories.\n\n### **Output Format:**\n<answer>\n{\n  "objects": [\n    {"id": "object_name.number", "bbox": [x1, y1, x2, y2]},\n    ...\n  ],\n  "relationships": [\n    {"subject": "object_name.number", "predicate": "relationship_type", "object": "object_name.number"},\n    ...\n  ]\n}\n</answer>\n\n### **Guidelines:**\n- **Objects:**\n  - Assign unique IDs in the format `"object_name.number"` (e.g., `"person.1"`). The **object_name** must belong to the predefined object set: `{OBJ_CLS}`.\n  - Provide a bounding box `[x1, y1, x2, y2]` in integer pixel format.\n  - Include all visible objects, even if they have no relationships.\n\n- **Relationships:**\n  - Define relationships using `"subject"`, `"predicate"`, and `"object"`.\n  - The **predicate** must belong to the predefined relationship set: `{REL_CLS}`.\n  - Omit relationships for orphan objects.\n\n### **Example Output:**\n<answer>\n{\n  "objects": [\n    {"id": "person.1", "bbox": [120, 200, 350, 700]},\n    {"id": "bike.2", "bbox": [100, 600, 400, 800]},\n    {"id": "helmet.3", "bbox": [150, 150, 280, 240]},\n    {"id": "tree.4", "bbox": [500, 100, 750, 700]}\n  ],\n  "relationships": [\n    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},\n    {"subject": "person.1", "predicate": "wearing", "object": "helmet.3"}\n  ]\n}\n</answer>\n\nNow, generate the complete scene graph for the provided image:\n'
 
 
-OBJ_HOLDER = "OBJECTS_HOLDER"
 
-PROMPT_CLS = """Given an image and a set of detected objects ```OBJECTS_HOLDER```, identify all possible visual relationships between two objects.
-### **Guidelines:**
-- **Objects:**
-  - Objects are formatted as `"object_name.number"` (e.g., `"person.1"`, `"cat.2"`).
+psg_categories = {"thing_classes": ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"], "stuff_classes": ["banner", "blanket", "bridge", "cardboard", "counter", "curtain", "door-stuff", "floor-wood", "flower", "fruit", "gravel", "house", "light", "mirror-stuff", "net", "pillow", "platform", "playingfield", "railroad", "river", "road", "roof", "sand", "sea", "shelf", "snow", "stairs", "tent", "towel", "wall-brick", "wall-stone", "wall-tile", "wall-wood", "water-other", "window-blind", "window-other", "tree-merged", "fence-merged", "ceiling-merged", "sky-other-merged", "cabinet-merged", "table-merged", "floor-other-merged", "pavement-merged", "mountain-merged", "grass-merged", "dirt-merged", "paper-merged", "food-other-merged", "building-other-merged", "rock-merged", "wall-other-merged", "rug-merged"], "predicate_classes": ["over", "in front of", "beside", "on", "in", "attached to", "hanging from", "on back of", "falling off", "going down", "painted on", "walking on", "running on", "crossing", "standing on", "lying on", "sitting on", "flying over", "jumping over", "jumping from", "wearing", "holding", "carrying", "looking at", "guiding", "kissing", "eating", "drinking", "feeding", "biting", "catching", "picking", "playing with", "chasing", "climbing", "cleaning", "playing", "touching", "pushing", "pulling", "opening", "cooking", "talking to", "throwing", "slicing", "driving", "riding", "parked on", "driving on", "about to hit", "kicking", "swinging", "entering", "exiting", "enclosing", "leaning on"]}
 
-- **Relationships:**
-  - Represent interactions accurately using `"subject"`,  `"predicate"`, and `"object"`.
-  - Omit relationships for orphan objects.
+PSG_OBJ_CATEGORIES = psg_categories['thing_classes'] + psg_categories['stuff_classes']
+PSG_REL_CATEGORIES = psg_categories['predicate_classes']
 
-### **Example Output:**
-```json
-{
-  "relationships": [
-    {"subject": "person.1", "predicate": "riding", "object": "bike.2"},
-    {"subject": "person.1", "predicate": "wearing", "object": "helme.3"}
-  ]
-}
-```
-Now, generate the result for the provided image:
-"""
+PROMPT_CLOSE_PSG = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(PSG_OBJ_CATEGORIES)).replace(
+                   "{REL_CLS}", json.dumps(PSG_REL_CATEGORIES))
+
+PROMPT_CLOSE_VG150 = PROMPT_CLOSE.replace("{OBJ_CLS}", json.dumps(VG150_OBJ_CATEGORIES[1:])).replace(
+                   "{REL_CLS}", json.dumps(VG150_PREDICATES[1:]))

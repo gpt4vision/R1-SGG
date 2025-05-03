@@ -44,7 +44,10 @@ from functools import lru_cache
 
 from open_r1.trainer.utils.misc import encode_image_to_base64
 
-from trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PROMPT_SG, PROMPT_SG_OPEN
+#---------------------- prompt templates ----------------------------
+from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150, VG150_BASE_OBJ_CATEGORIES, VG150_BASE_PREDICATE
+
+#---------------------------------------------------------------------------
 
 # Set DEBUG_MODE flag and log path once
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -67,15 +70,6 @@ BOX_L1_WEIGHT = 5.0
 FORMAT_REWARD_WEIGHT = float(os.getenv("FORMAT_REWARD_WEIGHT", '1.0'))
 NODE_REWARD_WEIGHT = float(os.getenv("NODE_REWARD_WEIGHT", '2.0'))
 EDGE_REWARD_WEIGHT = float(os.getenv("EDGE_REWARD_WEIGHT", '5.0'))
-
-VG150_BASE_OBJ_CATEGORIES = set(['tile', 'drawer', 'men', 'railing', 'stand', 'towel', 'sneaker', 'vegetable', 'screen', 'vehicle', 'animal', 'kite', 'cabinet', 'sink', 'wire', 'fruit', 'curtain', 'lamp', 'flag', 'pot', 'sock', 'boot', 'guy', 'kid', 'finger', 'basket', 'wave', 'lady', 'orange', 'number', 'toilet', 'post', 'room', 'paper', 'mountain', 'paw', 'banana', 'rock', 'cup', 'hill', 'house', 'airplane', 'plant', 'skier', 'fork', 'box', 'seat', 'engine', 'mouth', 'letter', 'windshield', 'desk', 'board', 'counter', 'branch', 'coat', 'logo', 'book', 'roof', 'tie', 'tower', 'glove', 'sheep', 'neck', 'shelf', 'bottle', 'cap', 'vase', 'racket', 'ski', 'phone', 'handle', 'boat', 'tire', 'flower', 'child', 'bowl', 'pillow', 'player', 'trunk', 'bag', 'wing', 'light', 'laptop', 'pizza', 'cow', 'truck', 'jean', 'eye', 'arm', 'leaf', 'bird', 'surfboard', 'umbrella', 'food', 'people', 'nose', 'beach', 'sidewalk', 'helmet', 'face', 'skateboard', 'motorcycle', 'clock', 'bear'])
-
-VG150_BASE_PREDICATE = set(["between", "to", "made of", "looking at", "along", "laying on", "using", "carrying", "against", "mounted on", "sitting on", "flying in", "covering", "from", "over", "near", "hanging from", "across", "at", "above", "watching", "covered in", "wearing", "holding", "and", "standing on", "lying on", "growing on", "under", "on back of", "with", "has", "in front of", "behind", "parked on"])
-
-VG150_OBJ_CATEGORIES = set(['airplane', 'animal', 'arm', 'bag', 'banana', 'basket', 'beach', 'bear', 'bed', 'bench', 'bike', 'bird', 'board', 'boat', 'book', 'boot', 'bottle', 'bowl', 'box', 'boy', 'branch', 'building', 'bus', 'cabinet', 'cap', 'car', 'cat', 'chair', 'child', 'clock', 'coat', 'counter', 'cow', 'cup', 'curtain', 'desk', 'dog', 'door', 'drawer', 'ear', 'elephant', 'engine', 'eye', 'face', 'fence', 'finger', 'flag', 'flower', 'food', 'fork', 'fruit', 'giraffe', 'girl', 'glass', 'glove', 'guy', 'hair', 'hand', 'handle', 'hat', 'head', 'helmet', 'hill', 'horse', 'house', 'jacket', 'jean', 'kid', 'kite', 'lady', 'lamp', 'laptop', 'leaf', 'leg', 'letter', 'light', 'logo', 'man', 'men', 'motorcycle', 'mountain', 'mouth', 'neck', 'nose', 'number', 'orange', 'pant', 'paper', 'paw', 'people', 'person', 'phone', 'pillow', 'pizza', 'plane', 'plant', 'plate', 'player', 'pole', 'post', 'pot', 'racket', 'railing', 'rock', 'roof', 'room', 'screen', 'seat', 'sheep', 'shelf', 'shirt', 'shoe', 'short', 'sidewalk', 'sign', 'sink', 'skateboard', 'ski', 'skier', 'sneaker', 'snow', 'sock', 'stand', 'street', 'surfboard', 'table', 'tail', 'tie', 'tile', 'tire', 'toilet', 'towel', 'tower', 'track', 'train', 'tree', 'truck', 'trunk', 'umbrella', 'vase', 'vegetable', 'vehicle', 'wave', 'wheel', 'window', 'windshield', 'wing', 'wire', 'woman', 'zebra'])
-
-VG150_PREDICATES = set(["above", "across", "against", "along", "and", "at", "attached to", "behind", "belonging to", "between", "carrying", "covered in", "covering", "eating", "flying in", "for", "from", "growing on", "hanging from", "has", "holding", "in", "in front of", "laying on", "looking at", "lying on", "made of", "mounted on", "near", "of", "on", "on back of", "over", "painted on", "parked on", "part of", "playing", "riding", "says", "sitting on", "standing on", "to", "under", "using", "walking in", "walking on", "watching", "wearing", "wears", "with"])
-
 
 
 
@@ -176,7 +170,6 @@ def extract_answer_content(text: str) -> str:
     return match.group(1).strip() if match else text
 
 def refine_node_edge(obj):
-    obj = obj.replace('-merged', '').replace('-other', '')
     obj = obj.replace("_", " ").replace("-", " ")
     return obj.strip().lower()
 
@@ -425,70 +418,6 @@ def resize_longest_side(img, target_long=224):
         new_w = int(w * (target_long / h))
     return img.resize((new_w, new_h))
 
-def self_evaluation(completions, image_id, image, task_type_list, **kwargs):
-    prompts = {}
-    for completion, im_id, pil_image, task_type in zip(completions, image_id, image, task_type_list):
-        content = completion[0]['content']
-        try:
-            answer = extract_answer_content(content)
-            preds = json.loads(answer)
-            pred_objs = preds['objects']
-            pred_rels = preds['relationships']
-            name2box = {obj['id']: obj['bbox'] for obj in pred_objs}
-        except:
-            continue
-
-        try:
-            for obj in pred_objs:
-                obj_name = obj['id'].split('.')[0]
-                box = obj['bbox']  # [x1, y1, x2, y2]
-                roi = pil_image.crop(box)
-                roi = resize_longest_side(roi, target_long=224)
-
-                choices = ['no visible object', obj_name]
-                neg_objs = list(VG150_OBJ_CATEGORIES - set([obj_name]))
-                choices += random.sample(neg_objs, 2)
-                random.shuffle(choices)
-
-                object_query = f"Which object appears in the image? Choose the most appropriate candidate from A) {choices[0]}; B) {choices[1]}; C) {choices[2]}; D) {choices[3]}."
-                object_query_prompt = build_conversation(roi, object_query)
-                qid = 'object-' + str(im_id) + '-' + obj_name + str(obj['bbox'])
-
-                prompts[qid] = object_query_prompt
-        except:
-            pass
-
-        try:
-            for rel in pred_rels:
-                sub_box = name2box[rel['subject']]
-                obj_box = name2box[rel['object']]
-                sub_name = rel['subject'].split('.')[0]
-                obj_name = rel['object'].split('.')[0]
-                union_box = [
-                    min(sub_box[0], obj_box[0]),
-                    min(sub_box[1], obj_box[1]),
-                    max(sub_box[2], obj_box[2]),
-                    max(sub_box[3], obj_box[3])
-                ]
-                roi = pil_image.crop(union_box)
-                roi = resize_longest_side(roi, target_long=512)
-
-                choices = ['no visible relationship', rel['predicate']]
-                neg_rels = list(set(VG150_PREDICATES) - set([rel['predicate']]))
-                choices += random.sample(neg_rels, 2)
-                random.shuffle(choices)
-
-                rel_query = f"What is the relationship between object {sub_name} and object {obj_name}? Choose the most appropriate candidate from A) {choices[0]}; B) {choices[1]}; C) {choices[2]}; D) {choices[3]}."
-                rel_query_prompt = build_conversation(roi, rel_query)
-                qid = 'rel-' + str(im_id) + '-' + sub_name + '-' + \
-                      str(sub_box) + '-' + obj_name + '-' + str(obj_box) + \
-                      '-' + str(rel['predicate'])
-
-                prompts[qid] = rel_query_prompt
-        except:
-            pass
-
-    return prompts
 
         
 def scale_box(box, scale):
@@ -831,11 +760,13 @@ def main(script_args, training_args, model_args):
         return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
-        def __init__(self, processor, model_type,
+        def __init__(self, dataset_name,
+                     processor, model_type,
                      use_predefined_cats,
                      use_think_prompt_inplace=False, 
                      disable_think_tags=False,
                      ):
+            self.dataset_name = dataset_name
             self.processor = processor
             self.model_type = model_type
             self.use_predefined_cats = use_predefined_cats
@@ -845,6 +776,7 @@ def main(script_args, training_args, model_args):
         def __repr__(self):
             return (
                 f"{self.__class__.__name__}(\n"
+                f"  dataset_name={self.dataset_name},\n"
                 f"  model_type={self.model_type},\n"
                 f"  processor={self.processor.__class__.__name__},\n"
                 f"  use_predefined_cats={self.use_predefined_cats},\n"
@@ -861,15 +793,17 @@ def main(script_args, training_args, model_args):
                 org_iw, org_ih = image.size
                 images.append(image)
                 if self.use_predefined_cats:
-                    org_prompt = example['prompt_close'] #w. predefined categories
+                    org_prompt = example['prompt_close']
+                    if 'prompt_close' in example:
+                        org_prompt = example['prompt_close']
+                    else:
+                        org_prompt = PROMPT_CLOSE_PSG if 'psg' in self.dataset_name else PROMPT_CLOSE_VG150
                 else:
-                    org_prompt = PROMPT_SG_OPEN
+                    org_prompt = PROMPT_SG
 
                 org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
                 org_prompt = replace_answer_format(org_prompt)
                 #     
-                if self.use_think_prompt_inplace:
-                    org_prompt = PROMPT_SG
 
                 system_prompt = "You are a helpful and multimodal AI assistant." if self.use_think_prompt_inplace or self.disable_think_tags else SYSTEM_PROMPT
                 prompt = [
@@ -974,7 +908,8 @@ def main(script_args, training_args, model_args):
     processor.pad_token_id = pad_token_id
     processor.eos_token_id = processor.tokenizer.eos_token_id
 
-    collator_instance = Collator(processor,  model_type=model_type,
+    collator_instance = Collator(script_args.dataset_name, 
+                                 processor,  model_type=model_type,
                                  use_predefined_cats=script_args.use_predefined_cats, 
                                  use_think_prompt_inplace=script_args.use_think_prompt_inplace,
                                  disable_think_tags=script_args.disable_think_tags,
