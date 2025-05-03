@@ -237,7 +237,7 @@ def main():
     subset = dataset.select(range(start_idx, end_idx))  # Select subset for this GPU
     print("*"*100, "\n rank:", rank, " world size:", world_size,
             "subset from", start_idx, " to ", end_idx, "\n", 
-            "\n data[0]:", format_data(dataset.data_name, dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
+            "\n data[0]:", format_data(args.dataset, dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
             "*"*100)
 
     data_loader = DataLoader(
