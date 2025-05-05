@@ -428,7 +428,7 @@ def resize_longest_side(img, target_long=224):
 def scale_box(box, scale):
     sw, sh = scale
     assert len(box) == 4, " len(box) != 4 "
-    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
+    return [box[0]*sw, box[1]*sh, box[2]*sw, box[3]*sh]
 
 
 
@@ -626,6 +626,115 @@ def edge_reward(completions, solution, image_id,  task_type_list, box_scale, **k
     return rewards
 
 
+def edge_hard_reward(completions, solution, image_id,  task_type_list, box_scale, **kwargs):
+    """Compute edge-level rewards."""
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
+        reward = 0.0
+        match_objects = []
+        match_triplets = []
+        if task_type not in ['sgg', 'cls']:
+            rewards.append(0)
+            continue
+        try:
+            preds = json.loads(extract_answer_content(content))
+            gt_objs = sol['objects']
+            gt_rels = sol['relationships']
+            pred_objs = preds['objects']
+            pred_rels = preds['relationships']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
+                obj['id'] = refine_node_edge(obj['id'])
+                _objs.append(obj)
+            pred_objs = _objs
+            gt_boxes = {e['id']: e['bbox'] for e in gt_objs}
+            pred_boxes = {e['id']: e['bbox'] for e in pred_objs}
+            for gt_rel in gt_rels:
+                match = False
+                for pred_rel in pred_rels:
+                    if refine_node_edge(gt_rel['predicate']) != refine_node_edge(pred_rel['predicate']):
+                        continue
+                    sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_boxes[refine_node_edge(pred_rel['subject'])])
+                    obj_iou = compute_iou(gt_boxes[gt_rel['object']], pred_boxes[refine_node_edge(pred_rel['object'])])
+                    if sub_iou < 0.5 or obj_iou < 0.5:
+                        continue
+                    match = refine_node_edge(gt_rel['subject']).split('.')[0] == refine_node_edge(pred_rel['subject']).split('.')[0] and \
+                            refine_node_edge(gt_rel['object']).split('.')[0] == refine_node_edge(pred_rel['object']).split('.')[0]
+                    if match:
+                        break 
+                reward += int(match) * EDGE_REWARD_WEIGHT
+            reward /= max(1, len(sol["relationships"])) 
+        except Exception:
+            reward = 0.0
+
+        rewards.append(reward)
+        if DEBUG_MODE:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"------------- {current_time} task_type:{task_type} Edge-level Reward {reward:.3f} -------------\n")
+                f.write(f"content: {content}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
+    return rewards
+
+def edge_hard_relax_reward(completions, solution, image_id,  task_type_list, box_scale, **kwargs):
+    """Compute edge-level rewards."""
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
+        reward = 0.0
+        match_objects = []
+        match_triplets = []
+        if task_type not in ['sgg', 'cls']:
+            rewards.append(0)
+            continue
+        try:
+            preds = json.loads(extract_answer_content(content))
+            gt_objs = sol['objects']
+            gt_rels = sol['relationships']
+            pred_objs = preds['objects']
+            pred_rels = preds['relationships']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
+                obj['id'] = refine_node_edge(obj['id'])
+                _objs.append(obj)
+            pred_objs = _objs
+            gt_boxes = {e['id']: e['bbox'] for e in gt_objs}
+            pred_boxes = {e['id']: e['bbox'] for e in pred_objs}
+            for gt_rel in gt_rels:
+                triplet_sim_list = []
+                for pred_rel in pred_rels:
+                    sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_boxes[refine_node_edge(pred_rel['subject'])])
+                    obj_iou = compute_iou(gt_boxes[gt_rel['object']], pred_boxes[refine_node_edge(pred_rel['object'])])
+                    if sub_iou < 0.5 or obj_iou < 0.5:
+                        continue
+                    triplet_sim = category_semantic_similarity(refine_node_edge(gt_rel['subject']), refine_node_edge(pred_rel['subject'])) * \
+                                  category_semantic_similarity(refine_node_edge(gt_rel['object']), refine_node_edge(pred_rel['object'])) * \
+                                  category_semantic_similarity(refine_node_edge(gt_rel['predicate']), refine_node_edge(pred_rel['predicate']))
+                    triplet_sim_list.append(triplet_sim)
+
+                reward += max(triplet_sim_list) * EDGE_REWARD_WEIGHT if len(triplet_sim_list) > 0 else 0
+            reward /= max(1, len(sol["relationships"])) 
+        except Exception:
+            reward = 0.0
+
+        rewards.append(reward)
+        if DEBUG_MODE:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"------------- {current_time} task_type:{task_type} Edge-level Reward {reward:.3f} -------------\n")
+                f.write(f"content: {content}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
+    return rewards
+
+def is_valid_id_format(s):
+    return bool(re.fullmatch(r"[a-zA-Z_]+\.\d+", s))
+
+
 def is_valid_box(item):
     if not isinstance(item, dict):
         return False
@@ -633,6 +742,11 @@ def is_valid_box(item):
     bbox = item.get("bbox") 
     if "id" not in item or not isinstance(bbox, list) or len(bbox) != 4:
         return False
+
+    # id format: [str].[number]
+    if not is_valid_id_format(item['id']):
+        pass
+        #return False
 
     return all(isinstance(e, (int, float)) for e in bbox)
 
@@ -662,6 +776,7 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
         content = completion[0]["content"].strip() 
         match = re.fullmatch(pattern, content, re.DOTALL)
         reward = 0.0
+        repeated_exist = False
         try:
             answer_json = json.loads(extract_answer_content(content))
             if task_type == 'sgg':
@@ -672,15 +787,21 @@ def format_reward(completions, image_id, task_type_list, **kwargs):
                         if not is_valid_box(obj):
                             graph_valid = False
                             break
+                    # repeated items
+                    repeated_exist = len(set(answer_json["objects"])) != len(answer_json["objects"])    
+                    rel_str_list = []
                     for rel in answer_json["relationships"]:
                         sub = rel["subject"]
                         obj = rel["object"]
+                        rel_str = f"{sub}-{rel['predicate']}-{obj}"
+                        rel_str_list.append(rel_str)
                         if (sub not in objs) or (obj not in objs) or (not is_valid_predicate(rel)):
                             graph_valid = False
                             break
-                    
+                    repeated_exist &= len(set(rel_str_list)) != len(rel_str_list) 
+                    repeated_penalty = -1.0 * int(repeated_exist)
                     if match and graph_valid:
-                        reward = 1.0
+                        reward = 1.0 
                     elif graph_valid and (not STRICT_FORMAT):
                         reward = 0.5 
                     else:
@@ -730,7 +851,8 @@ reward_funcs_registry = {
     "node_acc_reward": node_acc_reward,
     "node_box_reward": node_box_reward,
     "edge_reward": edge_reward,
-    # "diversity_reward": diversity_reward
+    "edge_hard_reward": edge_hard_reward,
+    "edge_hard_relax_reward":edge_hard_relax_reward,
 }
 
 SYSTEM_PROMPT = (

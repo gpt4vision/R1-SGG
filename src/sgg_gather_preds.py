@@ -131,7 +131,7 @@ def refine_node_edge(obj):
 
 def scale_box(box, scale):
     sw, sh = scale
-    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
+    return [box[0]*sw, box[1]*sh, box[2]*sw, box[3]*sh]
 
 def is_box(item):
     return (
