@@ -10,7 +10,17 @@ pip install trl@git+https://github.com/huggingface/trl.git@ece6738686a8527345532
 
 pip install --upgrade --no-build-isolation flash-attn==2.7.4.post1
 
+# for GH200,
+#MAX_JOBS=20 pip install --upgrade --no-build-isolation flash-attn==2.7.4.post1
+
+#git clone https://github.com/triton-lang/triton.git && git checkout 85267600 && cd triton && \
+#pip install -r python/requirements.txt # build-time dependencies && \
+#pip install -e python
 
 pip install -r requirements.txt
+
+# for GH200,
+#pip uninstall -y vllm &&git clone https://github.com/vllm-project/vllm.git&& cd vllm && git checkout ed6e9075d31e32c8548b480\
+#python use_existing_torch.py && pip install -r requirements/build.txt && pip install --no-build-isolation -e .
 
 pip install -e .
