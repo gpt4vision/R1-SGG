@@ -1,6 +1,5 @@
 {
     "backward_prefetch": "backward_pre",
     "forward_prefetch": "true",
-    "activation_checkpointing": true,
-    "fsdp_offload_params": true
+    "activation_checkpointing": "true"
 }

@@ -36,6 +36,7 @@ from transformers import (
     Qwen2VLProcessor,
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
+    Qwen2_5_VLProcessor
 )
 
 from trl import (
@@ -292,7 +293,7 @@ def main():
             labels = batch["input_ids"].clone()
             labels[labels == self.processor.tokenizer.pad_token_id] = -100  #
             # Ignore the image token index in the loss computation (model specific)
-            if isinstance(self.processor, Qwen2VLProcessor):
+            if isinstance(self.processor, Qwen2VLProcessor) or isinstance(self.processor, Qwen2_5_VLProcessor):
                 image_tokens = [151652,151653,151655]
             else:
                 image_tokens = [self.processor.tokenizer.convert_tokens_to_ids(self.processor.image_token)]

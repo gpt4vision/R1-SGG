@@ -27,6 +27,11 @@ os.environ["NCCL_BLOCKING_WAIT"] = "1"
 
 from src.vg_synonyms import VG150_OBJ_CATEGORIES, VG150_PREDICATES
 
+from transformers import AutoProcessor, LlavaForConditionalGeneration
+from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
+
+
+
 from open_r1.trainer.utils.misc import encode_image_to_base64, is_pil_image
 
 SYSTEM_PROMPT = (
@@ -51,6 +56,7 @@ from open_r1.trainer.utils.prompt_gallery import (
 def get_model(name, device_map="auto", max_model_len=4096):
     is_qwen2vl = 'qwen2vl' in name.lower() or 'qwen2-vl' in name.lower()
     is_qwen25vl = 'qwen2.5-vl' in name.lower() or 'qwen25-vl' in name.lower() or 'qwen2.5vl' in name.lower()
+    is_llava = 'llava' in name.lower()
     base_model_name = None
     if is_qwen2vl or is_qwen25vl:
         print("Using model:", name)
@@ -86,10 +92,17 @@ def get_model(name, device_map="auto", max_model_len=4096):
             max_model_len=max_model_len,
             mm_processor_kwargs= { "max_pixels": max_pixels, "min_pixels": min_pixels},
         )
+    elif is_llava:
+        model_cls = LlavaForConditionalGeneration if '1.5' in name else LlavaNextForConditionalGeneration
+        model = model_cls.from_pretrained(
+                  name, 
+                  torch_dtype=torch.bfloat16, 
+              ).to(device_map)
+        processor = AutoProcessor.from_pretrained(name)
     else:
         raise Exception(f"Unknown model_id: {name}")
 
-    return is_qwen2vl, is_qwen25vl, model, processor 
+    return is_qwen2vl, is_qwen25vl, is_llava, model, processor 
 
 
 def replace_answer_format(item: str) -> str:
@@ -154,7 +167,7 @@ def main():
 
 
     # Load the model and processor.
-    is_qwen2vl, is_qwen25vl, model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
+    is_qwen2vl, is_qwen25vl, is_llava, model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
     sampling_params = SamplingParams(
         temperature=0.01,
         top_k=1,
@@ -167,11 +180,14 @@ def main():
 
     class Collator(object):
         def __init__(self, data_name, 
-                     processor, use_predefined_cats, use_think_system_prompt):
+                     processor, 
+                     use_predefined_cats, use_think_system_prompt,
+                     is_llava=False):
             self.data_name = data_name
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self.use_think_system_prompt = use_think_system_prompt
+            self.is_llava = is_llava
 
         def __call__(self, examples):
             ids = [e['image_id'] for e in examples]
@@ -185,19 +201,28 @@ def main():
                                      use_predefined_cats=self.use_predefined_cats, 
                                      use_think_system_prompt=self.use_think_system_prompt)
 
-                llm_inputs.append(prompt)
+                if self.is_llava:
+                    conversation = [{'role': 'user', 'content': [{'type': 'text', 'text': prompt[-1]['content'][-1]['text']}, {"type": "image"},]}]
+                    prompt_item = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
+                    llm_inputs.append(prompt_item)
+                else:
+                    llm_inputs.append(prompt)
                 images.append(image)
 
-            texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
-                     for msg in llm_inputs]
-            inputs = processor(
-                text=texts,
-                images=images,
-                padding=True,
-                return_tensors="pt",
-            )
-            input_height = [inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
-            input_width = [inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]      
+            if self.is_llava:
+                llm_inputs = self.processor(text=llm_inputs, images=images, padding=True, return_tensors="pt")
+                input_height = input_width = [336]*len(images)
+            else:
+                texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                         for msg in llm_inputs]
+                inputs = processor(
+                    text=texts,
+                    images=images,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                input_height = [inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
+                input_width = [inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]      
 
             return ids, gt_objs, gt_rels, input_width, input_height, llm_inputs
 
@@ -235,7 +260,8 @@ def main():
                              shuffle=False, 
                              collate_fn=Collator(args.dataset, processor, 
                                                  use_predefined_cats=args.use_predefined_cats, 
-                                                 use_think_system_prompt=args.use_think_system_prompt),
+                                                 use_think_system_prompt=args.use_think_system_prompt,
+                                                 is_llava=is_llava),
                              pin_memory=True
                             )
     #data_loader = accelerator.prepare(data_loader)
@@ -249,9 +275,14 @@ def main():
     _iter = 0
     for im_ids, gt_objs, gt_rels, input_width, input_height, batch in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
         with torch.no_grad():
-            # Now pass correctly formatted inputs to vLLM
-            outputs = model.chat(batch, sampling_params=sampling_params)
-            output_texts = [output.outputs[0].text for output in outputs]
+            if is_llava:
+                batch = batch.to(model.device)
+                outputs = model.generate(**batch, max_new_tokens=2048)  
+                output_texts = processor.batch_decode(outputs, skip_special_tokens=True)
+                output_texts = [text.split("ASSISTANT:")[-1] for text in output_texts]
+            else:
+                outputs = model.chat(batch, sampling_params=sampling_params)
+                output_texts = [output.outputs[0].text for output in outputs]
 
  
         if local_rank == 0 and _iter % 100 == 0:
@@ -268,10 +299,8 @@ def main():
         for im_id, gt_obj, gt_rel, output_text, input_iw, input_ih in zip(im_ids, gt_objs, gt_rels, output_texts, input_width, input_height):
             if is_qwen2vl:
                 box_scale = [1000.0, 1000.0]
-            elif is_qwen25vl:
-                box_scale = [input_iw, input_ih]
             else:
-                raise Exception("TODO")
+                box_scale = [input_iw, input_ih]
 
             out = {"image_id": im_id, "response": output_text, 
                    "gt_objects": gt_obj, "gt_relationships": gt_rel,

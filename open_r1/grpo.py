@@ -369,59 +369,9 @@ def bi_match(groundtruths, predictions,
         sem_weight, iou_weight, box_l1_weight,
     )
 
-#def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
-#    num_gt = len(groundtruths)
-#    num_pred = len(predictions)
-#    pad = max(0, num_gt - num_pred)
-#    cost_matrix = np.zeros((num_pred + pad, num_gt))
-#
-#    for i, pred in enumerate(predictions):
-#        for j, gt in enumerate(groundtruths):
-#            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight, box_l1_weight)
-#    if pad > 0:
-#        cost_matrix[num_pred:, :] = 100000  # High cost for padded rows
-#
-#    row_ind, col_ind = linear_sum_assignment(cost_matrix)
-#    assignments = []
-#    for r, c in zip(row_ind, col_ind):
-#        if r >= num_pred:
-#            continue
-#        assignments.append({
-#            'groundtruth': groundtruths[c],
-#            'prediction': predictions[r],
-#            'cost': cost_matrix[r, c]
-#        })
-#    return assignments
 
 
-def build_conversation(image, text, use_think_system_prompt=False):
-#    system_prompt = SYSTEM_PROMPT if use_think_system_prompt else "You are a helpful and multimodal AI assistant."
 
-    base64_image = encode_image_to_base64(image)
-    messages = [
-#        {
-#            "role": "system",
-#            "content": system_prompt
-#        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                {"type": "text", "text": text},
-            ],
-        },
-    ]
-    return messages
-
-def resize_longest_side(img, target_long=224):
-    w, h = img.size
-    if w > h:
-        new_w = target_long
-        new_h = int(h * (target_long / w))
-    else:
-        new_h = target_long
-        new_w = int(w * (target_long / h))
-    return img.resize((new_w, new_h))
 
 
         
