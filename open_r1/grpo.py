@@ -16,19 +16,22 @@ import os
 import re
 import json
 import glob
+import copy
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 from tqdm import tqdm
 from collections import OrderedDict
+from functools import partial
 
 import torch
 #import torch._dynamo
 #torch._dynamo.config.suppress_errors = True
 
 import numpy as np
+import random
 from datasets import load_dataset, load_from_disk
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
+from transformers import AutoProcessor
 
 from trainer import GRPOTrainerV2, GRPOConfig
 
@@ -38,11 +41,23 @@ from scipy.optimize import linear_sum_assignment
 import spacy
 from functools import lru_cache
 
-from trl.data_utils import maybe_apply_chat_template
+
+from open_r1.trainer.utils.misc import encode_image_to_base64
+
+#---------------------- prompt templates ----------------------------
+from open_r1.trainer.utils.prompt_gallery import (
+    PROMPT_SG, 
+    PROMPT_CLOSE_PSG, 
+    PROMPT_CLOSE_VG150, 
+    VG150_BASE_OBJ_CATEGORIES, 
+    VG150_BASE_PREDICATE, format_prompt_close_sg
+)
+#---------------------------------------------------------------------------
 
 # Set DEBUG_MODE flag and log path once
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 LOG_PATH = os.getenv("LOG_PATH", "debug.log")
+
 STRICT_FORMAT = os.getenv("STRICT_FORMAT", "true").lower() == "true"
 
 # Load spaCy model (with word vectors)
@@ -57,9 +72,42 @@ SEM_WEIGHT = 1.0
 IOU_WEIGHT = 2.0
 BOX_L1_WEIGHT = 5.0
 
-FORMAT_REWARD_WEIGHT = 1.0 
-NODE_REWARD_WEIGHT = 2.0
-EDGE_REWARD_WEIGHT = 5.0 
+FORMAT_REWARD_WEIGHT = float(os.getenv("FORMAT_REWARD_WEIGHT", '1.0'))
+NODE_REWARD_WEIGHT = float(os.getenv("NODE_REWARD_WEIGHT", '2.0'))
+EDGE_REWARD_WEIGHT = float(os.getenv("EDGE_REWARD_WEIGHT", '5.0'))
+
+
+
+def answer_to_ovdr(example):
+    objs = json.loads(example['objects'])
+    rels = json.loads(example['relationships'])
+    obj_map = {}
+    idx = 1 
+    new_objs = []
+    for obj in objs:
+        if obj['id'].split('.')[0] in VG150_BASE_OBJ_CATEGORIES:
+            new_name = '%s.%s'%(obj['id'].split('.')[0], idx)
+            obj_map[obj['id']] = new_name
+            idx += 1
+            tmp = {'id': new_name, 'bbox': obj['bbox']}
+            new_objs.append(tmp)
+    new_rels = []
+    for rel in rels:
+        if rel['predicate'] in VG150_BASE_PREDICATE and rel['subject'] in obj_map and rel['object'] in obj_map:
+            tmp = {"subject": obj_map[rel['subject']], "predicate": rel['predicate'], "object": obj_map[rel['object']]}
+            new_rels.append(tmp)
+
+    if len(new_objs) == 0 or len(new_rels) == 0:
+        return None  # mark for removal
+
+    example['objects'] = json.dumps(new_objs)
+    example['relationships'] = json.dumps(new_rels)
+    return example
+            
+    
+
+        
+
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -70,9 +118,9 @@ class GRPOScriptArguments(ScriptArguments):
         reward_funcs (`list[str]`):
             List of reward functions. Possible values: 'accuracy', 'format'.
     """
-    reward_funcs: list[str] = field(
-        default_factory=lambda: ["accuracy", "format"],
-        metadata={"help": "List of reward functions. Possible values: 'accuracy', 'format'"},
+    reward_funcs: Optional[list[str]] = field(
+        default=None,
+        metadata={"help": "List of reward functions. Possible values: 'accuracy', 'format'."},
     )
     max_pixels: Optional[int] = field(
         default=12845056,
@@ -85,6 +133,26 @@ class GRPOScriptArguments(ScriptArguments):
     use_predefined_cats: bool = field(
         default=False, 
         metadata={"help": "Whether to use predefined object categories"}
+    )
+    task_type: list[str] = field(
+        default_factory=lambda: ["sgg"],
+        metadata={"help": "List of tasks. Possible values: 'sgg', 'det', or 'cls'."}
+    )
+    use_think_prompt_inplace: bool = field(
+        default=False,
+        metadata={"help": "Whether to place <think>...</think> in the user's prompt."}
+    )
+    disable_think_tags: bool=field(
+        default=False,
+        metadata={"help": "Whether to disable <think> tags."}
+    )
+    use_ovdr_split: bool = field(
+        default=False,
+        metadata={"help": "Whether to use ovdr split for the dataset."}
+    )
+    use_fp8: bool=field(
+        default=False, 
+        metadata={"help": "Whether to use FP8 for training."}
     )
 
 
@@ -107,7 +175,8 @@ def extract_answer_content(text: str) -> str:
     return match.group(1).strip() if match else text
 
 def refine_node_edge(obj):
-    return obj.replace("_", " ").replace("-", " ").lower()
+    obj = obj.replace("_", " ").replace("-", " ")
+    return obj.strip().lower()
 
 
 @lru_cache(maxsize=4096)
@@ -191,9 +260,6 @@ def box_L1(boxA, boxB):
     return l1_distance    
 
 
-def normalize_box(box, scale=1000.):
-    """ for qwen2vl, its output should be [0, 1000]"""
-    return [e / scale for e in box]
 
 
 def cost_function(pred, gt, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
@@ -242,6 +308,34 @@ def _bi_match_impl(groundtruths, predictions,
         if r < num_pred
     ]
 
+def bi_match_triplets(gt_rels, pred_rels):
+    num_gt = len(gt_rels)
+    num_pred = len(pred_rels)
+    pad = max(0, num_gt - num_pred)
+    cost_matrix = np.zeros((num_pred + pad, num_gt))
+    for i, pred in enumerate(pred_rels):
+        for j, gt in enumerate(gt_rels):
+            cost_matrix[i, j] = 1.0 - category_semantic_similarity(refine_node_edge(pred["subject"]), refine_node_edge(gt["subject"]) ) *\
+                                category_semantic_similarity(refine_node_edge(pred["object"]),  refine_node_edge(gt["object"]) ) *\
+                                category_semantic_similarity(refine_node_edge(pred["predicate"]), refine_node_edge(gt["predicate"]))
+        
+    if pad:
+        cost_matrix[num_pred:, :] = 1e5
+
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    
+    return [
+        {
+            "groundtruth": gt_rels[c],
+            "prediction":  pred_rels[r],
+            "cost":        cost_matrix[r, c],
+        }
+        for r, c in zip(row_ind, col_ind)
+        if r < num_pred
+    ]
+ 
+
+
 @lru_cache(maxsize=4096)
 def _bi_match_cached(gt_key, pred_key,
                      sem_weight, iou_weight, box_l1_weight):
@@ -275,47 +369,38 @@ def bi_match(groundtruths, predictions,
         sem_weight, iou_weight, box_l1_weight,
     )
 
-#def bi_match(groundtruths, predictions, sem_weight=SEM_WEIGHT, iou_weight=IOU_WEIGHT, box_l1_weight=BOX_L1_WEIGHT):
-#    num_gt = len(groundtruths)
-#    num_pred = len(predictions)
-#    pad = max(0, num_gt - num_pred)
-#    cost_matrix = np.zeros((num_pred + pad, num_gt))
-#
-#    for i, pred in enumerate(predictions):
-#        for j, gt in enumerate(groundtruths):
-#            cost_matrix[i, j] = cost_function(pred, gt, sem_weight, iou_weight, box_l1_weight)
-#    if pad > 0:
-#        cost_matrix[num_pred:, :] = 100000  # High cost for padded rows
-#
-#    row_ind, col_ind = linear_sum_assignment(cost_matrix)
-#    assignments = []
-#    for r, c in zip(row_ind, col_ind):
-#        if r >= num_pred:
-#            continue
-#        assignments.append({
-#            'groundtruth': groundtruths[c],
-#            'prediction': predictions[r],
-#            'cost': cost_matrix[r, c]
-#        })
-#    return assignments
 
 
-def node_acc_reward(completions, solution, image_id, **kwargs):
+
+
+
+        
+def scale_box(box, scale):
+    sw, sh = scale
+    assert len(box) == 4, " len(box) != 4 "
+    return [box[0]*sw, box[1]*sh, box[2]*sw, box[3]*sh]
+
+
+
+def node_acc_reward(completions, solution, image_id, task_type_list, box_scale, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for content, sol, im_id in zip(contents, solution, image_id):
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
         reward = 0.0
         match_objects = []
+        if task_type not in ['sgg', 'det']:
+            rewards.append(0)
+            continue
         try:
             gt_objs = sol['objects']
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
             _objs = []
             for obj in pred_objs:
-                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
                 obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
@@ -340,29 +425,32 @@ def node_acc_reward(completions, solution, image_id, **kwargs):
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Node-level Acc. Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Node-level Acc. Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def node_box_reward(completions, solution, image_id, **kwargs):
+def node_box_reward(completions, solution, image_id, task_type_list, box_scale, **kwargs):
     """Compute node-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for content, sol, im_id in zip(contents, solution, image_id):
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
         reward = 0.0
         match_objects = []
+        if task_type not in ['sgg', 'det']:
+            rewards.append(0)
+            continue
         try:
             gt_objs = sol['objects']
             preds = json.loads(extract_answer_content(content))
             pred_objs = preds['objects']
             _objs = []
             for obj in pred_objs:
-                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
                 obj['id'] = refine_node_edge(obj['id'])
                 _objs.append(obj)
             pred_objs = _objs
@@ -387,81 +475,98 @@ def node_box_reward(completions, solution, image_id, **kwargs):
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Node-level IoU Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Node-level IoU Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
                     f.write(f"Match objects: {match_objects}\n")
     return rewards
 
-def edge_reward(completions, solution, image_id,  **kwargs):
+
+def edge_reward(completions, solution, image_id,  task_type_list, box_scale, **kwargs):
     """Compute edge-level rewards."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for content, sol, im_id in zip(contents, solution, image_id):
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
         reward = 0.0
         match_objects = []
         match_triplets = []
+        if task_type not in ['sgg', 'cls']:
+            rewards.append(0)
+            continue
         try:
-            gt_objs = sol['objects']
-            gt_rels = sol['relationships']
             preds = json.loads(extract_answer_content(content))
-            pred_objs = preds['objects']
-            pred_rels = preds['relationships']
-            _objs = []
-            for obj in pred_objs:
-                obj['bbox'] = normalize_box(obj['bbox']) # for qwen2vl
-                obj['id'] = refine_node_edge(obj['id'])
-                _objs.append(obj)
-            pred_objs = _objs
+            if task_type == 'sgg':
+                gt_objs = sol['objects']
+                gt_rels = sol['relationships']
+                pred_objs = preds['objects']
+                pred_rels = preds['relationships']
+                _objs = []
+                for obj in pred_objs:
+                    obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
+                    obj['id'] = refine_node_edge(obj['id'])
+                    _objs.append(obj)
+                pred_objs = _objs
 
-            assignments = bi_match(gt_objs, pred_objs)
-            map_obj = {}
-            for assign in assignments:
-                gt_id = assign['groundtruth']['id']
-                pred_entry = assign['prediction']
-                if pred_entry is None or pred_entry.get('id') is None:
-                    continue
-                pred_id = pred_entry['id']
-                match_objects.append(
-                    f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
-                )
-                map_obj[gt_id] = pred_id
-
-            pred_triplets = { (refine_node_edge(rel['subject']), refine_node_edge(rel['object'])): \
-                               refine_node_edge(rel['predicate']) for rel in pred_rels }
-
-            gt_boxes = {e['id']: e['bbox'] for e in gt_objs}
-            pred_boxes = {e['id']: e['bbox'] for e in pred_objs}
-
-            for gt_rel in gt_rels:
-                sub, obj = gt_rel['subject'], gt_rel['object']
-                if (sub not in map_obj) or (obj not in map_obj):
-                    continue
-                sub_mapped = map_obj[sub]
-                obj_mapped = map_obj[obj]
-                if (sub_mapped, obj_mapped) in pred_triplets:
-                    pred_pred = pred_triplets[(sub_mapped, obj_mapped)]
-                    
-                    reward += category_semantic_similarity(sub, sub_mapped) * \
-                              category_semantic_similarity(obj, obj_mapped) * \
-                              category_semantic_similarity(gt_rel['predicate'], pred_pred) * \
-                              EDGE_REWARD_WEIGHT
-
-                    match_triplets.append(
-                        f"GT triplet: {sub} -> {gt_rel['predicate']} -> {obj}, "
-                        f"Pred: {sub_mapped} -> {pred_pred} -> {obj_mapped}"
+                assignments = bi_match(gt_objs, pred_objs)
+                map_obj = {}
+                for assign in assignments:
+                    gt_id = assign['groundtruth']['id']
+                    pred_entry = assign['prediction']
+                    if pred_entry is None or pred_entry.get('id') is None:
+                        continue
+                    pred_id = pred_entry['id']
+                    match_objects.append(
+                        f"Groundtruth {gt_id} -> Prediction {pred_id} with cost {assign['cost']:.3f}"
                     )
-            reward /= len(gt_rels) if gt_rels else 1
+                    map_obj[gt_id] = pred_id
+
+                pred_triplets = { (refine_node_edge(rel['subject']), refine_node_edge(rel['object'])): \
+                                   refine_node_edge(rel['predicate']) for rel in pred_rels }
+
+                gt_boxes = {e['id']: e['bbox'] for e in gt_objs}
+                pred_boxes = {e['id']: e['bbox'] for e in pred_objs}
+
+                for gt_rel in gt_rels:
+                    sub, obj = gt_rel['subject'], gt_rel['object']
+                    if (sub not in map_obj) or (obj not in map_obj):
+                        continue
+                    sub_mapped = map_obj[sub]
+                    obj_mapped = map_obj[obj]
+                    if (sub_mapped, obj_mapped) in pred_triplets:
+                        pred_pred = pred_triplets[(sub_mapped, obj_mapped)]
+                        
+                        reward += category_semantic_similarity(sub, sub_mapped) * \
+                                  category_semantic_similarity(obj, obj_mapped) * \
+                                  category_semantic_similarity(gt_rel['predicate'], pred_pred) * \
+                                  EDGE_REWARD_WEIGHT
+
+                        match_triplets.append(
+                            f"GT triplet: {sub} -> {gt_rel['predicate']} -> {obj}, "
+                            f"Pred: {sub_mapped} -> {pred_pred} -> {obj_mapped}"
+                        )
+                reward /= max(1, len(gt_rels))
+            elif task_type == 'cls':
+                assignments = bi_match_triplets(sol["relationships"], preds["relationships"])
+                reward = 0
+                for assign in assignments:
+                    gt = assign["groundtruth"]
+                    pred = assign["prediction"]
+
+                    reward += category_semantic_similarity(refine_node_edge(pred["subject"]), refine_node_edge(gt["subject"])) * \
+                              category_semantic_similarity(refine_node_edge(pred["object"]), refine_node_edge(gt["object"])) * \
+                              category_semantic_similarity(refine_node_edge(pred["predicate"]), refine_node_edge(gt["predicate"])) * EDGE_REWARD_WEIGHT
+
+                reward /= max(1, len(sol["relationships"])) 
         except Exception:
             reward = 0.0
 
         rewards.append(reward)
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Edge-level Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Edge-level Reward {reward:.3f} -------------\n")
                 f.write(f"content: {content}\n")
                 f.write(f"image_id: {im_id}, solution: {sol}\n")
                 if match_objects:
@@ -471,38 +576,212 @@ def edge_reward(completions, solution, image_id,  **kwargs):
     return rewards
 
 
-def format_reward(completions, image_id, **kwargs):
+def edge_hard_reward(completions, solution, image_id,  task_type_list, box_scale, **kwargs):
+    """Compute edge-level rewards."""
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
+        reward = 0.0
+        match_objects = []
+        match_triplets = []
+        if task_type not in ['sgg', 'cls']:
+            rewards.append(0)
+            continue
+        try:
+            preds = json.loads(extract_answer_content(content))
+            gt_objs = sol['objects']
+            gt_rels = sol['relationships']
+            pred_objs = preds['objects']
+            pred_rels = preds['relationships']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
+                obj['id'] = refine_node_edge(obj['id'])
+                _objs.append(obj)
+            pred_objs = _objs
+            gt_boxes = {e['id']: e['bbox'] for e in gt_objs}
+            pred_boxes = {e['id']: e['bbox'] for e in pred_objs}
+            for gt_rel in gt_rels:
+                match = False
+                for pred_rel in pred_rels:
+                    if refine_node_edge(gt_rel['predicate']) != refine_node_edge(pred_rel['predicate']):
+                        continue
+                    sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_boxes[refine_node_edge(pred_rel['subject'])])
+                    obj_iou = compute_iou(gt_boxes[gt_rel['object']], pred_boxes[refine_node_edge(pred_rel['object'])])
+                    if sub_iou < 0.5 or obj_iou < 0.5:
+                        continue
+                    match = refine_node_edge(gt_rel['subject']).split('.')[0] == refine_node_edge(pred_rel['subject']).split('.')[0] and \
+                            refine_node_edge(gt_rel['object']).split('.')[0] == refine_node_edge(pred_rel['object']).split('.')[0]
+                    if match:
+                        break 
+                reward += int(match) * EDGE_REWARD_WEIGHT
+            reward /= max(1, len(sol["relationships"])) 
+        except Exception:
+            reward = 0.0
+
+        rewards.append(reward)
+        if DEBUG_MODE:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"------------- {current_time} task_type:{task_type} Edge-level Reward {reward:.3f} -------------\n")
+                f.write(f"content: {content}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
+    return rewards
+
+def edge_hard_relax_reward(completions, solution, image_id,  task_type_list, box_scale, **kwargs):
+    """Compute edge-level rewards."""
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+
+    for content, sol, im_id, task_type, box_wh in zip(contents, solution, image_id, task_type_list, box_scale):
+        reward = 0.0
+        match_objects = []
+        match_triplets = []
+        if task_type not in ['sgg', 'cls']:
+            rewards.append(0)
+            continue
+        try:
+            preds = json.loads(extract_answer_content(content))
+            gt_objs = sol['objects']
+            gt_rels = sol['relationships']
+            pred_objs = preds['objects']
+            pred_rels = preds['relationships']
+            _objs = []
+            for obj in pred_objs:
+                obj['bbox'] = scale_box(obj['bbox'], (1.0 / box_wh[0], 1.0 / box_wh[1]))
+                obj['id'] = refine_node_edge(obj['id'])
+                _objs.append(obj)
+            pred_objs = _objs
+            gt_boxes = {e['id']: e['bbox'] for e in gt_objs}
+            pred_boxes = {e['id']: e['bbox'] for e in pred_objs}
+            for gt_rel in gt_rels:
+                triplet_sim_list = []
+                for pred_rel in pred_rels:
+                    sub_iou = compute_iou(gt_boxes[gt_rel['subject']], pred_boxes[refine_node_edge(pred_rel['subject'])])
+                    obj_iou = compute_iou(gt_boxes[gt_rel['object']], pred_boxes[refine_node_edge(pred_rel['object'])])
+                    if sub_iou < 0.5 or obj_iou < 0.5:
+                        continue
+                    triplet_sim = category_semantic_similarity(refine_node_edge(gt_rel['subject']), refine_node_edge(pred_rel['subject'])) * \
+                                  category_semantic_similarity(refine_node_edge(gt_rel['object']), refine_node_edge(pred_rel['object'])) * \
+                                  category_semantic_similarity(refine_node_edge(gt_rel['predicate']), refine_node_edge(pred_rel['predicate']))
+                    triplet_sim_list.append(triplet_sim)
+
+                reward += max(triplet_sim_list) * EDGE_REWARD_WEIGHT if len(triplet_sim_list) > 0 else 0
+            reward /= max(1, len(sol["relationships"])) 
+        except Exception:
+            reward = 0.0
+
+        rewards.append(reward)
+        if DEBUG_MODE:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"------------- {current_time} task_type:{task_type} Edge-level Reward {reward:.3f} -------------\n")
+                f.write(f"content: {content}\n")
+                f.write(f"image_id: {im_id}, solution: {sol}\n")
+    return rewards
+
+def is_valid_id_format(s):
+    return bool(re.fullmatch(r"[a-zA-Z_]+\.\d+", s))
+
+
+def is_valid_box(item):
+    if not isinstance(item, dict):
+        return False
+
+    bbox = item.get("bbox") 
+    if "id" not in item or not isinstance(bbox, list) or len(bbox) != 4:
+        return False
+
+    # id format: [str].[number]
+    if not is_valid_id_format(item['id']):
+        pass
+        #return False
+
+    return all(isinstance(e, (int, float)) for e in bbox)
+
+
+def is_valid_predicate(item):
+    if not isinstance(item, dict):
+        return False
+
+    keys = ("subject", "object", "predicate")
+    if not all(k in item for k in keys):
+        return False
+
+    return all(isinstance(item[k], str) for k in keys)
+
+def format_reward(completions, image_id, task_type_list, **kwargs):
     """
     Reward function that checks if the completion has the correct format:
     - Must contain <think>...</think> and <answer>...</answer>
     - The <answer> content must be a valid JSON dict with keys "objects" and "relationships"
     """
-    pattern = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
+    pattern = r"<think>.*?</think>\s*<answer>(.*?)</answer>"
 
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
 
-    for completion, im_id in zip(completions, image_id):
+    for completion, im_id, task_type in zip(completions, image_id, task_type_list):
         content = completion[0]["content"].strip() 
         match = re.fullmatch(pattern, content, re.DOTALL)
         reward = 0.0
+        repeated_exist = False
         try:
             answer_json = json.loads(extract_answer_content(content))
-            if isinstance(answer_json, dict) and ("objects" in answer_json) and ("relationships" in answer_json):
-                objs = set([e['id'] for e in answer_json["objects"]])
-                obj_valid = True
-                for rel in answer_json["relationships"]:
-                    sub = rel["subject"]
-                    obj = rel["object"]
-                    if (sub not in objs) or (obj not in objs):
-                        obj_valid = False
-                
-                if match and obj_valid:
-                    reward = 1.0
-                elif obj_valid and (not STRICT_FORMAT): # no need?
-                    reward = 0.5 
-                else:
-                    reward = 0.0
+            if task_type == 'sgg':
+                if isinstance(answer_json, dict) and ("objects" in answer_json) and ("relationships" in answer_json):
+                    objs = set([e['id'] for e in answer_json["objects"]])
+                    graph_valid = True
+                    for obj in answer_json["objects"]:
+                        if not is_valid_box(obj):
+                            graph_valid = False
+                            break
+                    # repeated items
+                    repeated_exist = len(set(answer_json["objects"])) != len(answer_json["objects"])    
+                    rel_str_list = []
+                    for rel in answer_json["relationships"]:
+                        sub = rel["subject"]
+                        obj = rel["object"]
+                        rel_str = f"{sub}-{rel['predicate']}-{obj}"
+                        rel_str_list.append(rel_str)
+                        if (sub not in objs) or (obj not in objs) or (not is_valid_predicate(rel)):
+                            graph_valid = False
+                            break
+                    repeated_exist &= len(set(rel_str_list)) != len(rel_str_list) 
+                    repeated_penalty = -1.0 * int(repeated_exist)
+                    if match and graph_valid:
+                        reward = 1.0 
+                    elif graph_valid and (not STRICT_FORMAT):
+                        reward = 0.5 
+                    else:
+                        reward = 0.0
+            elif task_type == 'det':
+                if isinstance(answer_json, dict) and ("objects" in answer_json):
+                    obj_valid = True
+                    for obj in answer_json["objects"]:
+                        if not is_valid_box(obj):
+                            obj_valid = False
+                            break
+                    if match and obj_valid:
+                        reward = 1.0
+                    elif obj_valid and (not STRICT_FORMAT):
+                        reward = 0.5
+                    else: 
+                        reward = 0.0
+            elif task_type == 'cls':
+                if isinstance(answer_json, dict) and ("relationships" in answer_json):
+                    rel_valid = True
+                    for rel in answer_json["relationships"]:
+                        if not is_valid_predicate(rel):
+                            rel_valid = False
+                            break
+                    if match and rel_valid:
+                        reward = 1.0
+                    elif rel_valid and (not STRICT_FORMAT):
+                        reward = 0.5
+                    else:
+                        reward = 0.0 
             
             rewards.append(reward * FORMAT_REWARD_WEIGHT)
         except Exception:
@@ -510,7 +789,7 @@ def format_reward(completions, image_id, **kwargs):
 
         if DEBUG_MODE:
             with open(LOG_PATH, "a") as f:
-                f.write(f"------------- {current_time} Format Reward {reward:.3f} -------------\n")
+                f.write(f"------------- {current_time} task_type:{task_type} Format Reward {reward:.3f} -------------\n")
                 f.write(f"image_id:{im_id}, content: {content}\n")
 
     return rewards
@@ -522,7 +801,8 @@ reward_funcs_registry = {
     "node_acc_reward": node_acc_reward,
     "node_box_reward": node_box_reward,
     "edge_reward": edge_reward,
-    # "diversity_reward": diversity_reward
+    "edge_hard_reward": edge_hard_reward,
+    "edge_hard_relax_reward":edge_hard_relax_reward,
 }
 
 SYSTEM_PROMPT = (
@@ -534,64 +814,76 @@ SYSTEM_PROMPT = (
 
 
 
-def resize_image(img, fix_length=512, resize=True, shortest_side=False):
-    if not resize:
-        return 1.0, img
-
-    width, height = img.size
-    if shortest_side:
-        ratio = fix_length / min(width, height)
-    else:
-        ratio = fix_length / max(width, height)
-
-    new_width = int(width * ratio)
-    new_height = int(height * ratio)
-    scale = (new_width / width, new_height / height)
-    return scale, img.resize((new_width, new_height))
-
-
-def scale_box(box, scale):
-    sw, sh = scale
-    assert len(box) == 4, " len(box) != 4 "
-    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
-
-
-
-
 def main(script_args, training_args, model_args):
-    script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
+    if script_args.reward_funcs is None:
+        script_args.reward_funcs = ['format_reward', 'node_acc_reward', "node_box_reward",  "edge_reward"]
+
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
     dataset = load_dataset(script_args.dataset_name)['train']
-    print("len(dataset):", len(dataset))
+
+    def assign_task_type(example, task_pool, rng):
+        example["task_type"] = rng.choice(task_pool)
+        return example
+    
+    rng = random.Random(training_args.seed)  
+    dataset = dataset.map(partial(assign_task_type, task_pool=script_args.task_type, rng=rng))
+    if script_args.use_ovdr_split:
+        dataset = dataset.map(answer_to_ovdr, remove_columns=[], load_from_cache_file=False)
+        dataset = dataset.filter(lambda x: x is not None)
+    print("len(dataset):", len(dataset), "with task_type:", script_args.task_type)
 
     def replace_answer_format(item: str) -> str:
         return item.replace("<answer>", "```json").replace("</answer>", "```")
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats):
+        def __init__(self, dataset_name,
+                     processor, model_type,
+                     use_predefined_cats,
+                     use_think_prompt_inplace=False, 
+                     disable_think_tags=False,
+                     ):
+            self.dataset_name = dataset_name
             self.processor = processor
+            self.model_type = model_type
             self.use_predefined_cats = use_predefined_cats
+            self.use_think_prompt_inplace = use_think_prompt_inplace
+            self.disable_think_tags = disable_think_tags
+
+        def __repr__(self):
+            return (
+                f"{self.__class__.__name__}(\n"
+                f"  dataset_name={self.dataset_name},\n"
+                f"  model_type={self.model_type},\n"
+                f"  processor={self.processor.__class__.__name__},\n"
+                f"  use_predefined_cats={self.use_predefined_cats},\n"
+                f"  use_think_prompt_inplace={self.use_think_prompt_inplace},\n"
+                f"  disable_think_tags={self.disable_think_tags},\n"
+                f")"
+            )            
 
         def __call__(self, examples):
             batch = []
+            images, prompts = [], []
             for example in examples:
-                image = example["image"].convert('RGB') 
+                image = example["image"].convert('RGB')
                 org_iw, org_ih = image.size
-                box_scale, image = resize_image(image, 512, resize=True)
-                new_iw, new_ih = image.size
-
+                images.append(image)
                 if self.use_predefined_cats:
-                    org_prompt = example['prompt_close'] #w. predefined categories
+                    if 'prompt_close' in example:
+                        org_prompt = example['prompt_close']
+                    else:
+                        org_prompt = PROMPT_CLOSE_PSG if 'psg' in self.dataset_name else PROMPT_CLOSE_VG150
                 else:
-                    org_prompt = example['prompt_open']
+                    org_prompt = PROMPT_SG
 
-                #org_prompt = org_prompt.replace(f"({org_iw} x {org_ih})", f"({new_iw} x {new_ih})")
                 org_prompt = org_prompt.replace(f"of size ({org_iw} x {org_ih}) ", "") # not provide image size
                 org_prompt = replace_answer_format(org_prompt)
+                #     
 
+                system_prompt = "You are a helpful and multimodal AI assistant." if self.use_think_prompt_inplace or self.disable_think_tags else SYSTEM_PROMPT
                 prompt = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
                         "content": [
@@ -602,6 +894,25 @@ def main(script_args, training_args, model_args):
                         ]
                     }
                 ]
+                prompts.append(prompt)
+
+            if self.model_type == 'qwen2vl':
+                input_width, input_height = [1000.0]*len(images), [1000.0]*len(images)
+            elif self.model_type == 'qwen2.5vl':
+                texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                         for msg in prompts
+                ]
+                image_inputs = self.processor(text=texts, images=images, padding=True, return_tensors="pt") 
+                input_height = [image_inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
+                input_width = [image_inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]
+            else:
+                raise Exception("TODO")
+            
+            for image, example, prompt, input_iw, input_ih in zip(images, examples, prompts, input_width, input_height):
+                org_iw, org_ih = image.size
+                box_scale = [input_iw, input_ih]
+
+                # load GTs.
                 gt_objs = example["objects"]
                 gt_rels = example["relationships"]
                 if not isinstance(gt_objs, (list, tuple)):
@@ -610,19 +921,22 @@ def main(script_args, training_args, model_args):
                     gt_rels = json.loads(gt_rels)
 
                 new_objs = []
+                # normalize box to [0,1]
                 for obj in gt_objs:
-                    bbox = scale_box(obj['bbox'], box_scale)
-                    # normalize box
-                    obj['bbox'] = [bbox[0] / new_iw, bbox[1] / new_ih, bbox[2] / new_iw, bbox[3] / new_ih]
-
+                    obj['bbox'] = scale_box(obj['bbox'], (1.0/org_iw, 1.0/org_ih))
                     new_objs.append(obj)
                 gt_objs = new_objs
 
+
                 scene_graph = {"objects": gt_objs, "relationships": gt_rels}
+                solution = scene_graph
+
                 batch.append({"prompt": prompt, 
                               "image": image, 
-                              "solution": scene_graph,
+                              "solution": solution,
                               "image_id": example['image_id'],
+                              "task_type_list": "sgg",
+                              "box_scale": box_scale,
                               })
 
             return batch
@@ -634,15 +948,35 @@ def main(script_args, training_args, model_args):
         rank = 0
         world_size = 1
 
-    if model_args.model_name_or_path not in ["Qwen/Qwen2-VL-7B-Instruct", "Qwen/Qwen2-VL-2B-Instruct"]:
-        if '7b' in model_args.model_name_or_path.lower():
-            base_name = "Qwen/Qwen2-VL-7B-Instruct"
-        else:
-            base_name = "Qwen/Qwen2-VL-2B-Instruct"
-    else:
-        base_name = model_args.model_name_or_path
+    model_type=None
+    base_name = None
+      
 
-    processor = Qwen2VLProcessor.from_pretrained(base_name, 
+    model_name = model_args.model_name_or_path.lower()
+    
+    if any(key in model_name for key in ['qwen2vl', 'qwen2-vl', 'qwen-2-vl']):
+        model_type = "qwen2vl"
+        if '7b' in model_name:
+            base_name = "Qwen/Qwen2-VL-7B-Instruct"
+        elif '2b' in model_name:
+            base_name = "Qwen/Qwen2-VL-2B-Instruct"
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+    
+    elif any(key in model_name for key in ['qwen2.5vl', 'qwen2.5-vl', 'qwen2-5-vl', 'qwen-2.5-vl']):
+        model_type = "qwen2.5vl"
+        if '7b' in model_name:
+            base_name = "Qwen/Qwen2.5-VL-7B-Instruct"
+        elif '3b' in model_name:
+            base_name = "Qwen/Qwen2.5-VL-3B-Instruct"
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+    
+    else:
+        raise Exception(f"Unknown model type: {model_args.model_name_or_path}")
+
+
+    processor = AutoProcessor.from_pretrained(base_name, 
                     min_pixels=script_args.min_pixels,
                     max_pixels=script_args.max_pixels)
 
@@ -650,7 +984,12 @@ def main(script_args, training_args, model_args):
     processor.pad_token_id = pad_token_id
     processor.eos_token_id = processor.tokenizer.eos_token_id
 
-    collator_instance = Collator(processor, script_args.use_predefined_cats)
+    collator_instance = Collator(script_args.dataset_name, 
+                                 processor,  model_type=model_type,
+                                 use_predefined_cats=script_args.use_predefined_cats, 
+                                 use_think_prompt_inplace=script_args.use_think_prompt_inplace,
+                                 disable_think_tags=script_args.disable_think_tags,
+                                )
 
     print("*" * 100)
     print(f"rank={rank}, world size={world_size}, len(dataset)={len(dataset)}, dataset[0]:", collator_instance([dataset[0]]))
@@ -689,11 +1028,20 @@ def main(script_args, training_args, model_args):
         min_pixels=script_args.min_pixels,
         data_collator=collator_instance,
         processing_class=processor,
-        model_type="qwen2vl", #hack
+        model_type=model_type,
+        use_fp8=script_args.use_fp8
     )
     # Check for existing checkpoint
     def find_valid_checkpoint(output_dir):
-        checkpoints = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")), key=lambda x:int(x.split('checkpoint-')[1]))
+        ckpt_re = re.compile(r"checkpoint-(\d+)$")      # ↳ ends right after the digits
+        
+        checkpoints = sorted(
+            [
+                p for p in glob.glob(os.path.join(output_dir, "checkpoint-*"))
+                if ckpt_re.search(os.path.basename(p))   # keep only pure-numeric checkpoints
+            ],
+            key=lambda p: int(ckpt_re.search(os.path.basename(p)).group(1))
+        )
         for ckpt in reversed(checkpoints):  # Check latest first
             if glob.glob(os.path.join(ckpt, "global_step*")):
                 return ckpt

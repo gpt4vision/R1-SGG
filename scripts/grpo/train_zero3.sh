@@ -11,6 +11,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=16000M
 #SBATCH --output=RL_%j_%N.out
+#SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
 # force crashing on nccl issues like hanging broadcast

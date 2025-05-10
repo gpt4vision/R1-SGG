@@ -13,6 +13,7 @@ from transformers import Qwen2VLForConditionalGeneration, GenerationConfig
 from qwen_vl_utils import process_vision_info
 
 import numpy as np
+import random
 from PIL import Image, ImageDraw
 
 from transformers import Qwen2_5_VLForConditionalGeneration
@@ -24,6 +25,13 @@ os.environ["NCCL_SOCKET_TIMEOUT"] = "3600000"  # 1 hours
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 
 
+from src.vg_synonyms import VG150_OBJ_CATEGORIES, VG150_PREDICATES
+
+from transformers import AutoProcessor, LlavaForConditionalGeneration
+from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
+
+
+
 from open_r1.trainer.utils.misc import encode_image_to_base64, is_pil_image
 
 SYSTEM_PROMPT = (
@@ -33,16 +41,39 @@ SYSTEM_PROMPT = (
     "<think> reasoning process here </think><answer> answer here </answer>"
 )
 
+from open_r1.trainer.utils.prompt_gallery import (
+    PROMPT_SG,
+    PROMPT_CLOSE_PSG,
+    PROMPT_CLOSE_VG150,
+    VG150_BASE_OBJ_CATEGORIES,
+    VG150_BASE_PREDICATE,
+    format_prompt_close_sg,
+    VG150_OBJ_CATEGORIES,
+    VG150_PREDICATES
+)
 
 
 def get_model(name, device_map="auto", max_model_len=4096):
     is_qwen2vl = 'qwen2vl' in name.lower() or 'qwen2-vl' in name.lower()
-
-    if is_qwen2vl:
+    is_qwen25vl = 'qwen2.5-vl' in name.lower() or 'qwen25-vl' in name.lower() or 'qwen2.5vl' in name.lower()
+    is_llava = 'llava' in name.lower()
+    base_model_name = None
+    if is_qwen2vl or is_qwen25vl:
         print("Using model:", name)
         min_pixels = 4*28*28
         max_pixels = 1024*28*28
-        base_model_name = "Qwen/Qwen2-VL-7B-Instruct" if '7b' in name.lower() else  "Qwen/Qwen2-VL-2B-Instruct"
+        if is_qwen2vl:
+            if '7b' in name.lower():
+                base_model_name = "Qwen/Qwen2-VL-7B-Instruct" 
+            elif '2b' in name.lower():
+                base_model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        if is_qwen25vl:
+            if '7b' in name.lower():
+                base_model_name = "Qwen/Qwen2.5-VL-7B-Instruct" 
+            elif '3b' in name.lower():
+                base_model_name = "Qwen/Qwen2.5-VL-3B-Instruct" 
+
+        assert base_model_name is not None, "TODO: check the model -- {}".format(name)
         processor = AutoProcessor.from_pretrained(base_model_name, 
                                         min_pixels=min_pixels, max_pixels=max_pixels)
 
@@ -61,22 +92,29 @@ def get_model(name, device_map="auto", max_model_len=4096):
             max_model_len=max_model_len,
             mm_processor_kwargs= { "max_pixels": max_pixels, "min_pixels": min_pixels},
         )
+    elif is_llava:
+        model_cls = LlavaForConditionalGeneration if '1.5' in name else LlavaNextForConditionalGeneration
+        model = model_cls.from_pretrained(
+                  name, 
+                  torch_dtype=torch.bfloat16, 
+              ).to(device_map)
+        processor = AutoProcessor.from_pretrained(name)
     else:
         raise Exception(f"Unknown model_id: {name}")
 
-    return model, processor 
+    return is_qwen2vl, is_qwen25vl, is_llava, model, processor 
 
 
 def replace_answer_format(item: str) -> str:
     return item.replace("<answer>", "```json").replace("</answer>", "```")
 
-def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False, remove_image_size_in_prompt=True):
+def format_data(dataset_name, sample, use_predefined_cats=False, use_think_system_prompt=False, remove_image_size_in_prompt=True):
     image = sample['image'].convert('RGB')
     iw, ih = image.size
     if use_predefined_cats:
-        prompt = sample['prompt_close']
+        prompt = PROMPT_CLOSE_PSG if 'psg' in dataset_name else PROMPT_CLOSE_VG150
     else:
-        prompt = sample['prompt_open']
+        prompt = PROMPT_SG
 
     if remove_image_size_in_prompt:
         prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
@@ -99,7 +137,7 @@ def format_data(sample, use_predefined_cats=False, use_think_system_prompt=False
             ],
         },
     ]
-    return messages
+    return image, messages
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run model inference on a dataset.")
@@ -129,7 +167,7 @@ def main():
 
 
     # Load the model and processor.
-    model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
+    is_qwen2vl, is_qwen25vl, is_llava, model, processor = get_model(args.model, device_map=device, max_model_len=args.max_model_len)
     sampling_params = SamplingParams(
         temperature=0.01,
         top_k=1,
@@ -141,10 +179,15 @@ def main():
     print(f"model_id: {args.model}", " generation_config:", sampling_params)
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats, use_think_system_prompt):
+        def __init__(self, data_name, 
+                     processor, 
+                     use_predefined_cats, use_think_system_prompt,
+                     is_llava=False):
+            self.data_name = data_name
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self.use_think_system_prompt = use_think_system_prompt
+            self.is_llava = is_llava
 
         def __call__(self, examples):
             ids = [e['image_id'] for e in examples]
@@ -152,14 +195,36 @@ def main():
             gt_rels = [e['relationships'] for e in examples]
     
             llm_inputs = []
+            images = []
             for example in examples:
-                prompt = format_data(example, 
+                image, prompt = format_data(self.data_name, example, 
                                      use_predefined_cats=self.use_predefined_cats, 
                                      use_think_system_prompt=self.use_think_system_prompt)
 
-                llm_inputs.append(prompt)
+                if self.is_llava:
+                    conversation = [{'role': 'user', 'content': [{'type': 'text', 'text': prompt[-1]['content'][-1]['text']}, {"type": "image"},]}]
+                    prompt_item = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
+                    llm_inputs.append(prompt_item)
+                else:
+                    llm_inputs.append(prompt)
+                images.append(image)
 
-            return ids, gt_objs, gt_rels, llm_inputs
+            if self.is_llava:
+                llm_inputs = self.processor(text=llm_inputs, images=images, padding=True, return_tensors="pt")
+                input_height = input_width = [336]*len(images)
+            else:
+                texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                         for msg in llm_inputs]
+                inputs = processor(
+                    text=texts,
+                    images=images,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                input_height = [inputs['image_grid_thw'][idx][1].item()*14 for idx in range(len(images))]
+                input_width = [inputs['image_grid_thw'][idx][2].item()*14 for idx in range(len(images))]      
+
+            return ids, gt_objs, gt_rels, input_width, input_height, llm_inputs
 
 
 
@@ -186,16 +251,17 @@ def main():
     subset = dataset.select(range(start_idx, end_idx))  # Select subset for this GPU
     print("*"*100, "\n rank:", rank, " world size:", world_size,
             "subset from", start_idx, " to ", end_idx, "\n", 
-            "\n data[0]:", format_data(dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
+            "\n data[0]:", format_data(args.dataset, dataset[0], use_predefined_cats=args.use_predefined_cats, use_think_system_prompt=args.use_think_system_prompt),
             "*"*100)
 
     data_loader = DataLoader(
                              subset, 
                              batch_size=args.batch_size, 
                              shuffle=False, 
-                             collate_fn=Collator(processor, 
+                             collate_fn=Collator(args.dataset, processor, 
                                                  use_predefined_cats=args.use_predefined_cats, 
-                                                 use_think_system_prompt=args.use_think_system_prompt),
+                                                 use_think_system_prompt=args.use_think_system_prompt,
+                                                 is_llava=is_llava),
                              pin_memory=True
                             )
     #data_loader = accelerator.prepare(data_loader)
@@ -207,13 +273,18 @@ def main():
 
     # Iterate over the data loader.
     _iter = 0
-    for (im_ids, gt_objs, gt_rels, batch) in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
+    for im_ids, gt_objs, gt_rels, input_width, input_height, batch in tqdm(data_loader, desc=f"Progress at rank {local_rank}"):
         with torch.no_grad():
-            # Now pass correctly formatted inputs to vLLM
-            outputs = model.chat(batch, sampling_params=sampling_params)
-            output_texts = [output.outputs[0].text for output in outputs]
+            if is_llava:
+                batch = batch.to(model.device)
+                outputs = model.generate(**batch, max_new_tokens=2048)  
+                output_texts = processor.batch_decode(outputs, skip_special_tokens=True)
+                output_texts = [text.split("ASSISTANT:")[-1] for text in output_texts]
+            else:
+                outputs = model.chat(batch, sampling_params=sampling_params)
+                output_texts = [output.outputs[0].text for output in outputs]
 
-
+ 
         if local_rank == 0 and _iter % 100 == 0:
             print("*" * 100)
             print("nvidia-smi:")
@@ -225,9 +296,15 @@ def main():
                     "*"*100)
 
         _iter += 1
-        for im_id, gt_obj, gt_rel, output_text in zip(im_ids, gt_objs, gt_rels, output_texts):
+        for im_id, gt_obj, gt_rel, output_text, input_iw, input_ih in zip(im_ids, gt_objs, gt_rels, output_texts, input_width, input_height):
+            if is_qwen2vl:
+                box_scale = [1000.0, 1000.0]
+            else:
+                box_scale = [input_iw, input_ih]
+
             out = {"image_id": im_id, "response": output_text, 
-                   "gt_objects": gt_obj, "gt_relationships": gt_rel 
+                   "gt_objects": gt_obj, "gt_relationships": gt_rel,
+                   "box_scale": box_scale
                   }
             dst_file = os.path.join(args.output_dir, f"{im_id}.json")
             with open(dst_file, 'w') as fout:

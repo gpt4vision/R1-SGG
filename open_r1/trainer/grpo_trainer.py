@@ -39,6 +39,7 @@ from torch.utils.data import DataLoader
 import transformers
 from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
 from transformers.trainer_utils import seed_worker
+from transformers import FineGrainedFP8Config
 
 from datasets import Dataset, IterableDataset
 from packaging import version
@@ -308,7 +309,9 @@ class GRPOTrainerV2(Trainer):
         max_pixels: Optional[int] = 12845056,
         min_pixels: Optional[int] = 3136,        
         data_collator=None,
-        model_type: str = "qwen2vl"
+        model_type: str = "qwen2vl",
+        self_evaluation: Optional[Callable[[list[Any]], Any]] = None,
+        use_fp8: bool = False
     ):
         # Args
         if args is None:
@@ -318,6 +321,8 @@ class GRPOTrainerV2(Trainer):
 
         # Models
         # Trained model
+        self.use_fp8 = use_fp8
+             
         self.is_qwen2vl = False
         self.model_type = model_type.lower()
         model_init_kwargs = args.model_init_kwargs or {}
@@ -415,6 +420,18 @@ class GRPOTrainerV2(Trainer):
         else:
             self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
 
+        if args.reward_warmup_steps is not None:
+            if len(args.reward_warmup_steps) != len(reward_funcs):
+                raise ValueError(
+                    f"Number of reward warmup steps ({len(args.reward_warmup_steps)}) must match number of reward "
+                    f"functions ({len(reward_funcs)})"
+                )
+            self.reward_warmup_steps = args.reward_warmup_steps
+            print(f"set reward_warmup_steps: {self.reward_warmup_steps}")
+        else:
+            self.reward_warmup_steps = None
+           
+
         # Reward processing class
         if reward_processing_classes is None:
             reward_processing_classes = [None] * len(reward_funcs)
@@ -487,7 +504,7 @@ class GRPOTrainerV2(Trainer):
                 raise ValueError(
                     f"The provided loss type (`{self.loss_type}`) is not supported with `use_liger_loss`. Liger loss "
                     "only supports `bnpo` for now."
-                )
+                )            
 
             self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
                 beta=self.beta,
@@ -495,7 +512,7 @@ class GRPOTrainerV2(Trainer):
                 epsilon_high=self.epsilon_high,
                 temperature=self.temperature,
                 use_ref_model=self.ref_model is not None,
-            )
+            )        
         
         assert args.custom_per_device_train_batch_size > 0, "please set custom_per_device_train_batch_size > 0!"
         args.per_device_train_batch_size = args.custom_per_device_train_batch_size * args.gradient_accumulation_steps
@@ -556,7 +573,8 @@ class GRPOTrainerV2(Trainer):
                                               device='cuda:%s'%self.accelerator.local_process_index,
                                               log_file=args.vllm_log_file,
                                               min_pixels=min_pixels,
-                                              max_pixels=max_pixels
+                                              max_pixels=max_pixels,
+                                              use_fp8=self.use_fp8
                                              )
             else:
                 vllm_server_hosts = args.vllm_server_host 
@@ -629,7 +647,7 @@ class GRPOTrainerV2(Trainer):
         self.model.add_model_tags(self._tag_names)
 
         if self.ref_model is not None:
-            if is_deepspeed_zero3_enabled()
+            if is_deepspeed_zero3_enabled():
                 self.ref_model = prepare_deepspeed(self.ref_model, self.accelerator)
             else:
                 self.ref_model = self.accelerator.prepare_model(self.ref_model, evaluation_mode=True)
@@ -847,7 +865,7 @@ class GRPOTrainerV2(Trainer):
                 self.vllm_client.update_model_in_chunks_from_named_list(param_chunk)
 
 
-        # Reset cache on main process
+        # Reset cache
         if self.vllm_client is not None:
             self.vllm_client.reset_prefix_cache()
 
@@ -915,7 +933,16 @@ class GRPOTrainerV2(Trainer):
                 f"All reward functions returned None for the following kwargs: {row_reward_kwargs}. "
                 "Please ensure that at least one reward function returns a valid reward."
             )                
-        rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        #rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        # Dynamic warm-up scaling
+        step = self.state.global_step
+        adjusted_weights = self.reward_weights.clone()
+        if self.reward_warmup_steps is not None:
+            for i, warmup in enumerate(self.reward_warmup_steps):
+                if warmup > 0:
+                    scale = min(1.0, step * 1.0 / warmup)
+                    adjusted_weights[i] *= scale
+        rewards = (rewards_per_func * adjusted_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
@@ -1135,7 +1162,7 @@ class GRPOTrainerV2(Trainer):
 
 
         # truncate TODO: dangerous for qwen2vl
-        if self.max_prompt_length is not None:
+        if self.max_prompt_length is not None and not self.is_qwen2vl:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
@@ -1253,18 +1280,39 @@ class GRPOTrainerV2(Trainer):
         rewards_per_func = gather(rewards_per_func)
 
         # Apply weights to each reward function's output and sum
-        rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        #rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        # Dynamic warm-up scaling
+        step = self.state.global_step
+        adjusted_weights = self.reward_weights.clone()
+        if self.reward_warmup_steps is not None:
+            for i, warmup in enumerate(self.reward_warmup_steps):
+                if warmup > 0:
+                    scale = min(1.0, step / warmup)
+                    adjusted_weights[i] *= scale
 
-        # Compute grouped-wise rewards
-        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+        if self.args.split_rewards:
+            rewards_per_func = rewards_per_func.view(-1, self.num_generations, len(self.reward_funcs))
+            mean_grouped_rewards = rewards_per_func.mean(dim=1, keepdim=True)
+            std_grouped_rewards = rewards_per_func.std(dim=1, keepdim=True)
+            
+            mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=1)
+            std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=1)
+            
+            rewards = rewards_per_func.nansum(dim=2)
+            advantages = ((rewards_per_func - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)).nansum(dim=2).view(-1)
+        else:
+            rewards = (rewards_per_func * adjusted_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-        # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        advantages = rewards - mean_grouped_rewards
-        if self.args.scale_rewards:
-            advantages = advantages / (std_grouped_rewards + 1e-4)
+            # Compute grouped-wise rewards
+            mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
+            std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+
+            # Normalize the rewards to compute the advantages
+            mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+            std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+            advantages = rewards - mean_grouped_rewards
+            if self.args.scale_rewards:
+                advantages = advantages / (std_grouped_rewards + 1e-4)
 
         # Slice to keep only the local part of the data
         process_slice = slice(
@@ -1295,6 +1343,7 @@ class GRPOTrainerV2(Trainer):
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
         self._metrics[mode]["reward_std_std"].append(std_grouped_rewards.std().item())
+        self._metrics[mode]["advantages"].append(advantages.mean().item())
 
 
         return {

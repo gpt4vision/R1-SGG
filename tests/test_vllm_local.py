@@ -15,6 +15,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 from transformers import Qwen2VLForConditionalGeneration
+from transformers import FineGrainedFP8Config
 
 SYSTEM_PROMPT = (
     "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
@@ -62,31 +63,39 @@ def prepare_messages(item):
 def main(args):
     db = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
 
-    processor = AutoProcessor.from_pretrained(args.model_name_or_path)
+    processor = AutoProcessor.from_pretrained(args.model_name_or_path, max_pixels=512*28*28)
     prompts = []
     for kk, item in enumerate(tqdm(db)):
-        if kk > 10: break
+        if kk > 200: break
         prompt = prepare_messages(item)
         prompts.append(prompt)
 
+    use_fp8 = True
+
+    quantization_config = FineGrainedFP8Config()
+    kwargs = {"device_map": "cuda:0", 'attn_implementation': 'flash_attention_2'}
+    if use_fp8:
+        kwargs['quantization_config'] = quantization_config
+
+
     client = VLLMClient(
        local_vllm=True,
-       model_name=args.model_name_or_path
+       model_name=args.model_name_or_path,
+       max_pixels=512*28*28,
+       use_fp8=use_fp8,
+       device='cuda:0',
+       gpu_memory_utilization=0.9
     )
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto"
-    )    
 
 
 
 
     print("[INFO] Running vLLM inference...")
     t0 = time.time()
-    prompts = [json.dumps(e) for e in prompts]
-    print(len(prompts))
+    print("len(prompts):", len(prompts))
 
-    generated_ids = client.run_chat(prompts, n=1, max_tokens=100,
-                top_p=0.001, top_k=1, temperature=1.0)
+    generated_ids = client.run_chat([prompts[0]], n=8, max_tokens=1024,
+                top_p=0.95, top_k=50, temperature=1.0)
 
     t1 = time.time() - t0
     #generated_ids = [torch.as_tensor(e) for e in generated_ids]
@@ -97,6 +106,26 @@ def main(args):
         print(outputs[0][i])
 
     print(" cost:", t1)
+    # benchmark speed
+    cost = []
+    t0 = time.time()
+    BS = 8
+    N = 5
+    for i in tqdm(range(N)):
+        s0 = time.time()
+        generated_ids = client.run_chat(prompts[2+i*BS: 2+(i+1)*BS], n=8, max_tokens=1024,
+                top_p=0.95, top_k=50, temperature=1.0)
+        s1 = time.time()
+        cost.append(s1-s0)
+        
+    t1 = time.time()
+    print("Benchmark speed :", (t1-t0)/ (BS*N), "second / item", " Batch cost: ", sum(cost)/len(cost) )
+    quit()
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        "Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, 
+        **kwargs
+    )    
+
 
     # check weight sync.
     llmp = client.llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -234,3 +263,4 @@ if __name__ == "__main__":
     parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Model ID or path.")
     args = parser.parse_args()
     main(args)
+

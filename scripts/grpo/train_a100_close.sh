@@ -9,7 +9,10 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=128
 
+#SBATCH --account=a-a03
+#SBATCH --partition=normal
 #SBATCH --output=RL_A100_%j_%N.out
+#SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
 set -x 

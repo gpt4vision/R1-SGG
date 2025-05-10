@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=15
 #SBATCH --mem-per-cpu=16000M
 #SBATCH --output=TrainVLLM_%j_%N.out
+#SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 set -euo pipefail
 

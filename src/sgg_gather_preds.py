@@ -17,7 +17,7 @@ from utils.wordnet import find_synonym_map
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 
-from src.vg_synonyms import obj2vg_list, rel2vg_list, pass2act_list, VG150_OBJ_CATEGORIES, VG150_PREDICATES
+from src.vg_synonyms import obj2vg_list, rel2vg_list, pass2act_list, VG150_OBJ_CATEGORIES, VG150_PREDICATES, obj2psg_list
 
 
 # Load spaCy model (with word vectors)
@@ -29,7 +29,7 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 
-DEBUG=False
+DEBUG=os.getenv("DEBUG", "false").lower() == "true"
 
 
 
@@ -131,7 +131,7 @@ def refine_node_edge(obj):
 
 def scale_box(box, scale):
     sw, sh = scale
-    return [int(box[0]*sw), int(box[1]*sh), int(box[2]*sw), int(box[3]*sh)]
+    return [box[0]*sw, box[1]*sh, box[2]*sw, box[3]*sh]
 
 def is_box(item):
     return (
@@ -240,8 +240,8 @@ def visualize_assignments(image, pred_objs, gt_objs, assignments, filename,
     plt.close()    
 
 def main():
-    json_folder = sys.argv[1] 
-    is_psg = 'psg' in json_folder
+    is_psg = sys.argv[1] == 'psg'
+    json_folder = sys.argv[2] 
     print("is_psg:", is_psg)
     if is_psg:
         psg_categories = json.load(open("src/psg_categories.json"))
@@ -260,14 +260,11 @@ def main():
         with open(file_path, 'r') as f:
             preds.append(json.load(f))
             
-    is_qwen2vl = True # normalize bbox to [0, 1000]
-    print("is_qwen2vl:", is_qwen2vl)
-    if is_qwen2vl:
-        if not is_psg:
-            db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
-        else:
-            db_raw = load_dataset("JosephZ/psg_test_sg")['train']
-        db = {e['image_id']: e for e in tqdm(db_raw, desc="Loading dataset")}
+    if not is_psg:
+        db_raw = load_dataset("JosephZ/vg150_val_sgg_prompt")['train']
+    else:
+        db_raw = load_dataset("JosephZ/psg_test_sg")['train']
+    db = {str(e['image_id']): e for e in tqdm(db_raw, desc="Loading dataset")}
 
 
     fails = [0, 0]
@@ -277,7 +274,7 @@ def main():
         map_obj2target = {e['source']: e['target'] for e in obj2vg_list}
         map_rel2target = {e['source']: e['target'] for e in rel2vg_list}
     else:
-        map_obj2target = {}
+        map_obj2target = {e['source']: e['target'] for e in obj2psg_list}
         map_rel2target = {}
 
     pass2act = {e['source']: e for e in pass2act_list}
@@ -294,10 +291,6 @@ def main():
 
         im_id = item['image_id']
         all_im_ids.append(im_id)
-        image = db[im_id]['image']
-        if is_qwen2vl: # for Qwen2VL, the output is normalized to [0, 1000]
-            iw, ih = image.size
-            scale_factors = (iw / 1000.0, ih / 1000.0)
     
         gt_objs = json.loads(item['gt_objects'])
         gt_rels = json.loads(item['gt_relationships'])
@@ -305,6 +298,11 @@ def main():
 
         resp = item['response']
         try:
+            image = db[str(im_id)]['image']
+            iw, ih = image.size
+            box_scale = item['box_scale'] if "box_scale" in item else [1000.0, 1000.0] # Qwen2-VL use a normalization [0, 1000]
+            scale_factors = (iw / box_scale[0], ih / box_scale[1])
+
             # Remove <answer> tags and parse JSON
             resp = extract_answer_content(resp)
             resp = json.loads(resp)
@@ -317,8 +315,7 @@ def main():
                 assert is_box(obj['bbox']), "invalid box :{}".format(obj['bbox'])
                 assert 'id' in obj, "invalid obj:{}".format(obj)
                 assert isinstance(obj['id'], str), f"invalid obj:{obj}"
-                if is_qwen2vl:
-                    obj['bbox'] = scale_box(obj['bbox'], scale_factors)
+                obj['bbox'] = scale_box(obj['bbox'], scale_factors)
 
                 pred_objs_.append({'id': refine_node_edge(obj['id']), 'bbox': obj['bbox']})
             pred_objs = pred_objs_
@@ -400,8 +397,10 @@ def main():
                     predicate = map_rel2target[predicate]
                    
                 if predicate in target_predicates:
-                    relation_tuples.append([sub.split('.')[0], pred_objs_dict['boxes'][sid], 
-                                            obj.split('.')[0], pred_objs_dict['boxes'][oid],
+                    relation_tuples.append([pred_objs_dict['names_target'][sid], 
+                                            pred_objs_dict['boxes'][sid], 
+                                            pred_objs_dict['names_target'][oid],
+                                            pred_objs_dict['boxes'][oid],
                                             predicate])
 
                     triplet = [sid, oid, 
@@ -453,7 +452,7 @@ def main():
     print("obj_cats:", len(obj_cats), obj_cats)
     print("obj_cats (novel):", [e for e in obj_cats if e not in map_obj2target and e not in NAME2CAT])
     
-    with open(sys.argv[2], 'w') as fout:
+    with open(sys.argv[3], 'w') as fout:
         json.dump(preds_dict, fout)
 
 if __name__ == "__main__":

@@ -86,64 +86,32 @@ class WeightSyncWorker(Worker):
                 "vLLM is required to use the WeightSyncWorker. Please install it using `pip install vllm`."
             )
         super().__init__(*args, **kwargs)
-        self.pynccl_comm_intra = None  # Communicator for weight updates
-        self.pynccl_comm_cross = None
+        self.pynccl_comm = None  # Communicator for weight updates
         self.client_rank = None  # Source rank for broadcasting updated weights
-        self.collocate = False
-        self.intra_port = int(os.environ.get("INTRA_PORT", 29520))
-        self.rank_cross = None
 
-    def init_communicator(self, host: str, port: int, world_size: int, collocate: bool, client_device_id: int) -> None:
-        if self.pynccl_comm_intra is not None:
+    def init_communicator(self, host: str, port: int, world_size: int) -> None:
+        if self.pynccl_comm is not None:
             raise RuntimeError("Weight update group already initialized. Call close_communicator first.")
-
         rank = get_world_group().rank
-        if collocate:
-            self.collocate = True
-            self.client_rank = 1
-            if rank == world_size - 1:
-                assert rank != client_device_id, " NCCL cannot work on a same GPU !"
-                self.rank_cross = rank
-                pg = StatelessProcessGroup.create(host=host, port=port, rank=0, world_size=2)
-                self.pynccl_comm_cross = PyNcclCommunicator(pg, device=self.device)
+        # 
+        pg = StatelessProcessGroup.create(host=host, port=port, 
+                        rank=rank, 
+                        world_size=world_size)
 
-            
-            pg_intra = StatelessProcessGroup.create(host='127.0.0.1', port=self.intra_port, 
-                            rank=rank, world_size=world_size)
-
-            self.pynccl_comm_intra = PyNcclCommunicator(pg_intra, device=self.device)
-        else:
-            # 
-            pg = StatelessProcessGroup.create(host=host, port=port, 
-                            rank=rank, 
-                            world_size=world_size)
-
-            self.pynccl_comm_intra = PyNcclCommunicator(pg, device=self.device)
-            self.client_rank = world_size - 1
+        self.pynccl_comm = PyNcclCommunicator(pg, device=self.device)
+        self.client_rank = world_size - 1
 
     def update_named_param(self, name: str, dtype: torch.dtype, shape: Sequence[int]) -> None:
-        if self.pynccl_comm_intra is None:
+        if self.pynccl_comm is None:
             raise RuntimeError("Communicator not initialized. Call `init_communicator` first.")
         weight = torch.empty(shape, dtype=dtype, device=self.device)
-        rank = get_world_group().rank
-        if self.collocate:
-            self.pynccl_comm_intra.group.barrier()
-            if rank == self.rank_cross:
-                self.pynccl_comm_cross.broadcast(weight, src=self.client_rank, stream=torch.cuda.current_stream())
-                self.pynccl_comm_cross.group.barrier()
-            #wait until synchronization
-            self.pynccl_comm_intra.group.barrier()
-            #broadcast within the group
-            self.pynccl_comm_intra.broadcast(weight, src=self.rank_cross, stream=torch.cuda.current_stream())
-            self.pynccl_comm_intra.group.barrier()
-        else:
-            self.pynccl_comm_intra.broadcast(weight, src=self.client_rank, stream=torch.cuda.current_stream())
-            self.pynccl_comm_intra.group.barrier()
+        self.pynccl_comm.broadcast(weight, src=self.client_rank, stream=torch.cuda.current_stream())
+        self.pynccl_comm.group.barrier()
 
         self.model_runner.model.load_weights(weights=[(name, weight)])
 
     def load_chunked_params(self, param_meta: List[dict]):
-        if self.pynccl_comm_intra is None:
+        if self.pynccl_comm is None:
             raise RuntimeError("Communicator not initialized. Call `init_communicator` first.")
 
         # Group parameters by dtype
@@ -151,25 +119,13 @@ class WeightSyncWorker(Worker):
         for param in param_meta:
             dtype_groups.setdefault(param["dtype"], []).append(param)
 
-        rank = get_world_group().rank
         for dtype_str, group in dtype_groups.items():
             dtype = getattr(torch, dtype_str.split(".")[-1])
             total_elems = sum(torch.Size(p["shape"]).numel() for p in group)
             flat_tensor = torch.empty(total_elems, dtype=dtype, device=self.device)
 
-            if self.collocate:
-                self.pynccl_comm_intra.group.barrier()
-                if rank == self.rank_cross:
-                    self.pynccl_comm_cross.broadcast(flat_tensor, src=self.client_rank, stream=torch.cuda.current_stream())
-                    self.pynccl_comm_cross.group.barrier()
-                #wait until synchronization
-                self.pynccl_comm_intra.group.barrier()
-                #broadcast within the group
-                self.pynccl_comm_intra.broadcast(flat_tensor, src=self.rank_cross, stream=torch.cuda.current_stream())
-                self.pynccl_comm_intra.group.barrier()
-            else:
-                self.pynccl_comm_intra.broadcast(flat_tensor, src=self.client_rank, stream=torch.cuda.current_stream())
-                self.pynccl_comm_intra.group.barrier()
+            self.pynccl_comm.broadcast(flat_tensor, src=self.client_rank, stream=torch.cuda.current_stream())
+            self.pynccl_comm.group.barrier()
 
             offset = 0
             for meta in group:
@@ -181,12 +137,10 @@ class WeightSyncWorker(Worker):
 
 
     def close_communicator(self) -> None:
-        if self.pynccl_comm_intra is not None:
-            del self.pynccl_comm_intra
-            self.pynccl_comm_intra = None
+        if self.pynccl_comm is not None:
+            del self.pynccl_comm
+            self.pynccl_comm = None
             self.client_rank = None
-        if self.pynccl_comm_cross is not None:
-            del self.pynccl_comm_cross
 
 
 @dataclass
@@ -345,15 +299,15 @@ def main(script_args: ScriptArguments):
         port: int
         world_size: int
         client_rank: int
-        collocate: bool
-        client_device_id: int
 
     @app.post("/init_communicator/")
     async def init_communicator(request: InitCommunicatorRequest, background_tasks: BackgroundTasks):
+        total_workers = request.world_size
+
         background_tasks.add_task(
             llm.collective_rpc,
             "init_communicator",
-            args=(request.host, request.port, request.world_size, request.collocate, request.client_device_id),
+            args=(request.host, request.port, total_workers),
         )
         return {"message": "Request received, initializing communicator from client rank:%s"%request.client_rank }
 

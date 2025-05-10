@@ -315,6 +315,14 @@ class GRPOConfig(TrainingArguments):
             "rewards are weighted equally with weight `1.0`."
         },
     )
+    reward_warmup_steps: Optional[list[int]] = field(
+        default=None,
+        metadata={"help": "warmup steps for rewards."}
+    )
+    split_rewards: bool = field(
+        default=False,
+        metadata={"help": "whether to split the rewards"}
+    )
     scale_rewards: bool = field(
         default=True,
         metadata={

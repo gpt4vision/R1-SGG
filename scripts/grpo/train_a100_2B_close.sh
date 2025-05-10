@@ -2,14 +2,17 @@
 
 
 #SBATCH --job-name=A100_2B
-#SBATCH --time=15:00:00
+#SBATCH --time=24:00:00
 
 #SBATCH --nodes=4  # 4 nodes, each has 4x A100  
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=128
 
+#SBATCH --account=a-a03
+#SBATCH --partition=normal
 #SBATCH --output=RL_A100_%j_%N.out
+#SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
 # ---------- Environment Setup ----------
@@ -22,7 +25,7 @@ GPUS_PER_NODE=4
 GROUP_SIZE=8
 MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
 DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-RUN_NAME="qwen2vl-2b-close-grpo-g${GROUP_SIZE}-n1-bs32-lr1e-6-A100-SXM4"
+RUN_NAME="qwen2vl-2b-close-grpo-g${GROUP_SIZE}-n1-bs32-A100-SXM4"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
@@ -41,8 +44,9 @@ TRAIN_NODES_LIST=("${NODELIST[@]:0:$NUM_TRAIN_NODES}")
 HEAD_NODE=${TRAIN_NODES_LIST[0]}
 
 #MASTER_ADDR=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
+#MASTER_ADDR=$(echo "${SLURM_NODELIST}" | sed 's/[],].*//g; s/\[//g')
 
-MASTER_ADDR=$(echo "${SLURM_NODELIST}" | sed 's/[],].*//g; s/\[//g')
+MASTER_ADDR=$(scontrol show hostnames $SLURM_NODELIST | head -n 1)
 echo "MASTER_ADDR: $MASTER_ADDR"
 
 
@@ -67,7 +71,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --bf16 true\
     --tf32 true\
     --report_to wandb \
-    --gradient_checkpointing true \
+    --gradient_checkpointing false \
     --max_pixels ${MAX_PIXELS} \
     --temperature 1.0 \
     --top_p 0.9 \
@@ -86,8 +90,7 @@ TRAIN_CMD="open_r1/grpo.py \
     
 echo "start training..."
 
-srun --nodes=${NUM_TRAIN_NODES} --nodelist="${TRAIN_NODES_LIST}" \
-    torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
+srun torchrun --nnodes ${NUM_TRAIN_NODES} --nproc_per_node ${GPUS_PER_NODE} \
     --node_rank ${SLURM_NODEID} \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \

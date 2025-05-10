@@ -17,17 +17,27 @@
 Supervised fine-tuning script for decoder language models.
 
 """
+import os
 import json
 import random
 from tqdm import tqdm
 import torch
 import math
 from dataclasses import dataclass, field
+import re
+import glob
+from typing import Optional
 
 from accelerate import Accelerator
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoProcessor
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
+from datasets import load_dataset, load_from_disk
+
+from transformers import (
+    AutoProcessor, 
+    Qwen2VLProcessor,
+    Qwen2VLForConditionalGeneration,
+    Qwen2_5_VLForConditionalGeneration,
+    Qwen2_5_VLProcessor
+)
 
 from trl import (
     ModelConfig,
@@ -42,8 +52,11 @@ from trl import (
 
 from qwen_vl_utils import process_vision_info
 
-from open_r1.trainer.utils.prompt_gallery import PROMPT_DET, PROMPT_CLS, OBJ_HOLDER, PROMPT_SG, PROMPT_SG_OPEN
+#---------------------- prompt templates ----------------------------
+from open_r1.trainer.utils.prompt_gallery import PROMPT_SG, PROMPT_CLOSE_TEMPLATE, PROMPT_CLOSE_PSG, PROMPT_CLOSE_VG150 
 
+from src.mega_1m_category import megasg_object_categories, megasg_relation_categories
+#---------------------------------------------------------------------------
 
 
 def format_answer(objects:str, relationships:str, shuffle=False):
@@ -82,6 +95,7 @@ def format_answer(objects:str, relationships:str, shuffle=False):
 
     objects = [json.dumps(e) for e in objects]
     relationships = [json.dumps(e) for e in relationships]
+    
 
     # Format structured answer
     structured_answer = (
@@ -98,15 +112,30 @@ def format_answer(objects:str, relationships:str, shuffle=False):
 def replace_answer_format(item: str) -> str:
     return item.replace("<answer>", "```json").replace("</answer>", "```")
 
-def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=True, shuffle=False):
+def format_data(dataset_name, sample, use_predefined_cats=False, remove_image_size_in_prompt=True, shuffle=False):
     """Prepare dataset example for training."""
 
     image = sample["image"].convert('RGB')
     iw, ih = image.size
     if use_predefined_cats:
-        prompt = sample['prompt_close'] # w. pre-defined categories
+        if 'prompt_close' in sample:
+            prompt = sample['prompt_close']
+        else:
+            if 'psg' in dataset_name:
+                prompt = PROMPT_CLOSE_PSG
+            elif 'vg' in dataset_name:
+                prompt = PROMPT_CLOSE_VG150
+            elif 'mega' in dataset_name:
+                obj_sets = megasg_object_categories[sample['data_source']]
+                rel_sets = megasg_relation_categories[sample['data_source']]
+                prompt = PROMPT_CLOSE_TEMPLATE.replace("{OBJ_CLS}", json.dumps(obj_sets)).replace(
+                   "{REL_CLS}", json.dumps(rel_sets))
+            else:
+                raise Exception("Unsupported dataset:{}".format(dataset_name))
     else:
-        prompt = PROMPT_SG_OPEN
+        prompt = PROMPT_SG
+
+    use_think = 'think' in sample
 
     if remove_image_size_in_prompt:
         prompt = prompt.replace(f"of size ({iw} x {ih}) ", "")
@@ -122,6 +151,8 @@ def format_data(sample, use_predefined_cats=False, remove_image_size_in_prompt=T
         objs.append(obj)
 
     answer = format_answer(objs, sample["relationships"], shuffle=shuffle)
+    if use_think:
+        answer = '{}<answer>\n{}\n</answer>'.format(sample['think'], answer)
 
     messages = [
         {
@@ -150,6 +181,14 @@ class CustomScriptArguments(ScriptArguments):
         default=False, 
         metadata={"help": "Whether to use predefined object categories"}
     )
+    max_pixels: Optional[int] = field(
+        default=1024*28*28,
+        metadata={"help": "Maximum number of pixels for the image"},
+    )
+    min_pixels: Optional[int] = field(
+        default=4*28*28,
+        metadata={"help": "Minimum number of pixels for the image"},
+    )
 
 
 
@@ -160,13 +199,14 @@ def main():
     script_args, training_args, model_args = parser.parse_args_and_config()
 
     # load dataset 
-    train_dataset = load_dataset(script_args.dataset_name)['train']
-    #split_db = dataset.train_test_split(test_size=0.01, seed=42)
-    #train_dataset = split_db["train"]
-    #val_dataset = split_db["test"]
+    try:
+        train_dataset = load_dataset(script_args.dataset_name)['train']
+    except:
+        train_dataset = load_from_disk(script_args.dataset_name)
+
     print(f"Training set size: {len(train_dataset)}")
     #print(f"Validation set size: {len(val_dataset)}")
-    print("Train set[0]:", format_data(train_dataset[0], use_predefined_cats=script_args.use_predefined_cats))
+    print("Train set[0]:", format_data(script_args.dataset_name, train_dataset[0], use_predefined_cats=script_args.use_predefined_cats))
 
     
     # model config.
@@ -182,17 +222,50 @@ def main():
     )
     training_args.model_init_kwargs = model_kwargs
 
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
+
+    model_type=None
+    base_name = None
+    model_name = model_args.model_name_or_path.lower()
+
+    if any(key in model_name for key in ['qwen2vl', 'qwen2-vl', 'qwen-2-vl']):
+        model_type = "qwen2vl"
+        if '7b' in model_name:
+            base_name = "Qwen/Qwen2-VL-7B-Instruct"
+        elif '2b' in model_name:
+            base_name = "Qwen/Qwen2-VL-2B-Instruct"
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+
+    elif any(key in model_name for key in ['qwen2.5vl', 'qwen2.5-vl', 'qwen2-5-vl', 'qwen-2.5-vl']):
+        model_type = "qwen2.5vl"
+        if '7b' in model_name:
+            base_name = "Qwen/Qwen2.5-VL-7B-Instruct"
+        elif '3b' in model_name:
+            base_name = "Qwen/Qwen2.5-VL-3B-Instruct"
+        else:
+            raise Exception(f"Unknown model size in: {model_name}")
+
+    else:
+        raise Exception(f"Unknown model type: {model_args.model_name_or_path}")
+
+    processor = AutoProcessor.from_pretrained(base_name,
+                    min_pixels=script_args.min_pixels,
+                    max_pixels=script_args.max_pixels)
+    model_cls = None
+    if model_type == "qwen2vl":
+        model_cls = Qwen2VLForConditionalGeneration
+    elif model_type == "qwen2.5vl":
+        model_cls = Qwen2_5_VLForConditionalGeneration
+
+    assert model_cls is not None, " Unsupported model:{}".format(model_args.model_name_or_path)
+
+    model = model_cls.from_pretrained(
         model_args.model_name_or_path, **model_kwargs
     )
-    min_pixels = 3136
-    max_pixels = 1024 * 28 * 28
-    processor = Qwen2VLProcessor.from_pretrained(model_args.model_name_or_path, 
-                    min_pixels=min_pixels, max_pixels=max_pixels)
-
 
     class Collator(object):
-        def __init__(self, processor, use_predefined_cats):
+        def __init__(self, dataset_name, processor, use_predefined_cats):
+            self.dataset_name = dataset_name
             self.processor = processor
             self.use_predefined_cats = use_predefined_cats
             self._db = {}
@@ -205,7 +278,7 @@ def main():
                     self._db[str(example)] = 0
 
                 shuffle = (self._db[str(example)] > 0) & (random.random() > 0.5)
-                format_example = format_data(example, use_predefined_cats=self.use_predefined_cats, shuffle=shuffle)['messages']
+                format_example = format_data(self.dataset_name, example, use_predefined_cats=self.use_predefined_cats, shuffle=shuffle)['messages']
                 self._db[str(example)] += 1
 
                 text = self.processor.apply_chat_template(format_example, tokenize=False)
@@ -220,7 +293,7 @@ def main():
             labels = batch["input_ids"].clone()
             labels[labels == self.processor.tokenizer.pad_token_id] = -100  #
             # Ignore the image token index in the loss computation (model specific)
-            if isinstance(self.processor, Qwen2VLProcessor):
+            if isinstance(self.processor, Qwen2VLProcessor) or isinstance(self.processor, Qwen2_5_VLProcessor):
                 image_tokens = [151652,151653,151655]
             else:
                 image_tokens = [self.processor.tokenizer.convert_tokens_to_ids(self.processor.image_token)]
@@ -258,10 +331,32 @@ def main():
         train_dataset=train_dataset, 
         eval_dataset=None, #val_dataset,
         processing_class=processor.tokenizer,
-        data_collator=Collator(processor, script_args.use_predefined_cats),
+        data_collator=Collator(script_args.dataset_name, processor, script_args.use_predefined_cats),
         peft_config=get_peft_config(model_args),
     )
-    trainer.train()
+    # Check for existing checkpoint
+    def find_valid_checkpoint(output_dir):
+        ckpt_re = re.compile(r"checkpoint-(\d+)$")      # ↳ ends right after the digits
+        
+        checkpoints = sorted(
+            [
+                p for p in glob.glob(os.path.join(output_dir, "checkpoint-*"))
+                if ckpt_re.search(os.path.basename(p))   # keep only pure-numeric checkpoints
+            ],
+            key=lambda p: int(ckpt_re.search(os.path.basename(p)).group(1))
+        )
+        for ckpt in reversed(checkpoints):  # Check latest first
+            if glob.glob(os.path.join(ckpt, "global_step*")):
+                return ckpt
+        return None
+    
+    ckpt_to_resume = find_valid_checkpoint(training_args.output_dir)
+    if ckpt_to_resume:
+        print(f"[INFO] Resuming from checkpoint: {ckpt_to_resume}")
+        trainer.train(resume_from_checkpoint=ckpt_to_resume)
+    else:
+        print("[INFO] Starting training from scratch")
+        trainer.train()
 
     # Save and push to hub
     trainer.save_model(training_args.output_dir)

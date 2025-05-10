@@ -53,8 +53,8 @@ We transformed VG150 into HuggingFace Datasets format with keys:
 ## 🔥 Supported Models
 - [x] Qwen/Qwen2-VL-2B-Instruct
 - [x] Qwen/Qwen2-VL-7B-Instruct
-- [ ] Qwen/Qwen2.5-VL-3B-Instruct
-- [ ] Qwen/Qwen2.5-VL-7B-Instruct
+- [x] Qwen/Qwen2.5-VL-3B-Instruct
+- [x] Qwen/Qwen2.5-VL-7B-Instruct
 
 ---
 
@@ -78,6 +78,10 @@ bash scripts/sft_local/7B_sgg.sh
 ---
 
 ### Training with Reinforcement Learning (GRPO)
+** Update (11/05/2025): to use "Hard Recall"**:
+```
+--reward_funcs format_reward edge_hard_reward 
+```
 
 For **A100 GPUs**:
 ```bash
@@ -145,3 +149,4 @@ If you find this work helpful, please cite:
 ---
 
 # ✨ Happy Compiling!
+

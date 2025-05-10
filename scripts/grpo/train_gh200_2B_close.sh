@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=2B_bs32_gh200_SFT_lr6e-7_psg
+#SBATCH --job-name=2B_bs32_gh200_sft_close_lr2x
 #SBATCH --time=12:00:00
 
 #SBATCH --nodes=4  # 2 nodes, each has 4x GH200                   
@@ -16,6 +16,7 @@
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL
 
 
+set -x
 # ---------- Environment Setup ----------
 export NCCL_ASYNC_ERROR_HANDLING=1
 export DEBUG_MODE=True
@@ -24,20 +25,16 @@ export WANDB_PROJECT=RL4SGG
 
 GPUS_PER_NODE=4
 GROUP_SIZE=8
-#MODEL_PATH="Qwen/Qwen2-VL-2B-Instruct"
-MODEL_PATH=$1
-
-#DATA_PATH="JosephZ/vg150_train_sgg_prompt"
-DATA_PATH="JosephZ/psg_train_sg"
-RUN_NAME="qwen2vl-2b-sft-grpo-g8-n1-bs32-lr6e-7-psg-merged-gh200"
+MODEL_PATH=$1 #"Qwen/Qwen2-VL-2B-Instruct"
+DATA_PATH="JosephZ/vg150_train_sgg_prompt"
+RUN_NAME="qwen2vl-2b-sft-close-grpo-g8-n1-bs32-lr6e-7-gh200"
 export OUTPUT_DIR="${SCRATCH}/models/${RUN_NAME}"
 mkdir -p "$OUTPUT_DIR"
 
-export LOG_PATH=${OUTPUT_DIR}/debug.log
-export STRICT_FORMAT=True
-
 MAX_PIXELS=$((512 * 28 * 28))
 
+export LOG_PATH=${OUTPUT_DIR}/debug.log
+export STRICT_FORMAT=True
 
 MASTER_PORT=29500
 
@@ -63,6 +60,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --deepspeed ./local_scripts/zero2_offload.json \
     --gradient_accumulation_steps 1 \
     --learning_rate 6e-7 \
+    --use_predefined_cats true \
     --logging_steps 1 \
     --use_vllm true \
     --use_local_vllm true\
@@ -74,7 +72,7 @@ TRAIN_CMD="open_r1/grpo.py \
     --temperature 1 \
     --top_p 0.9 \
     --top_k 50 \
-    --max_steps 2000 \
+    --num_train_epochs 1 \
     --run_name ${RUN_NAME} \
     --save_steps 100 \
     --num_generations ${GROUP_SIZE} \
