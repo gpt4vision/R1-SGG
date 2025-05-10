@@ -81,7 +81,8 @@ class VLLMClient:
         device: str="auto",
         log_file: Optional[str]=None,
         min_pixels: Optional[int] = 4*28*28,
-        max_pixels: Optional[int] = 1024*28*28
+        max_pixels: Optional[int] = 1024*28*28,
+        use_fp8: Optional[bool] = False
     ):
         self.log_file = log_file
         # Set up the file logging redirection if log_file is provided.
@@ -109,6 +110,9 @@ class VLLMClient:
             except Exception:
                 pass            
             # 
+            llm_kwargs = {}
+            if use_fp8:
+                llm_kwargs['quantization'] = 'fp8'
             self.llm = LLM(
                 model=model_name,
                 revision=revision,
@@ -120,7 +124,8 @@ class VLLMClient:
                 max_model_len=max_model_len,
                 limit_mm_per_prompt={"image": limit_mm_per_prompt},
                 mm_processor_kwargs= {"max_pixels": max_pixels, "min_pixels": min_pixels},
-                device=device
+                device=device,
+                **llm_kwargs
             )
         else:
             if not is_requests_available():
