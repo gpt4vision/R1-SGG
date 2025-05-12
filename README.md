@@ -124,7 +124,8 @@ bash scripts/inference/run_sgg_inference.sh $DATASET $MODEL_NAME $OUTPUT_DIR fal
 
 ### Evaluation:
 ```bash
-python src/sgg_gather_preds.py $OUTPUT_DIR sgg_pred_results.json
+DATASET_TYPE=vg # or psg
+python src/sgg_gather_preds.py $DATASET_TYPE $OUTPUT_DIR sgg_pred_results.json
 python src/vg150_eval.py $DATASET sgg_pred_results.json
 ```
 
