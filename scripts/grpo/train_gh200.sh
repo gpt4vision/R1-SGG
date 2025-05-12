@@ -13,7 +13,6 @@
 #SBATCH --cpus-per-task=288 # fixed for GH200
 
 
-#SBATCH --account=a-a03
 #SBATCH --partition=normal
 #SBATCH --output=RL_gh200_%j_%N.out
 #SBATCH --mail-user="zychen.uestc@gmail.com" --mail-type=ALL

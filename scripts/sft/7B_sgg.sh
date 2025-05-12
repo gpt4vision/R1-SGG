@@ -13,7 +13,6 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=288
 
-#SBATCH --account=a-a03
 #SBATCH --mail-user="zychen.uestc@gmail.com"
 #SBATCH --mail-type=ALL
 #SBATCH --output=SFT-7B_%j_%N.out
